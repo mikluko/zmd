@@ -40,8 +40,14 @@ the second circle and the second row are the same session.
 | --- | --- |
 | `enter` | Attach to the session here. Where there is none, start one. Where there are several, open the session list for this directory. |
 | `alt-enter` | Start another session here, under a label you type. |
+| `delete` | Kill the session here, after asking. Where there are several, open the session list rather than kill them all. |
+| `ctrl-delete` | Kill it without asking. |
 | `tab` | Between the two lists. |
 | `esc` | Leave. |
+
+Backspace is not a kill. A filter typed to find the session to kill would
+otherwise leave every correction one keystroke from killing whatever the
+cursor had been left on.
 
 There is no `ctrl-enter`: a terminal sends the same byte for it as for
 `enter`, and fzf has no name for a key it cannot be told apart from.

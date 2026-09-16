@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -207,14 +208,14 @@ func args(m mode, prompt string, cursor int) []string {
 		"--layout=reverse",
 		"--no-sort",
 		"--prompt=" + prompt,
-		"--expect=" + strings.Join([]string{keyMode, keyModeBack, keyNew}, ","),
+		"--expect=" + strings.Join([]string{keyMode, keyModeBack, keyNew, keyKill, keyKillHard}, ","),
 	}
 
 	preview := "zmx history {2}"
-	header := "⏎ attach   tab directories"
+	header := "⏎ attach   ⌦ kill   tab directories"
 	if m == modeDir {
 		preview = "lsd -la --color=always {2}"
-		header = "⏎ attach or start   ⌥⏎ start another   tab sessions"
+		header = "⏎ attach or start   ⌥⏎ start another   ⌦ kill   tab sessions"
 	}
 	if layout := previewLayout(termSize()); layout != "" {
 		out = append(out, "--preview="+preview, "--preview-window="+layout)
@@ -281,6 +282,31 @@ func navigate(root string) (name, dir string, err error) {
 		chosen := rows[index]
 
 		switch key {
+		case keyKill, keyKillHard:
+			// A directory holding several is the same ambiguity enter meets,
+			// and killing every one of them is not what a single keystroke
+			// should mean.
+			if chosen.several {
+				m, filter = modeSession, chosen.dir
+				continue
+			}
+			if chosen.session == "" {
+				continue
+			}
+			if key == keyKill {
+				ok, err := confirm("kill " + chosen.session + "?")
+				if err != nil && !errors.Is(err, errCancelled) {
+					return "", "", err
+				}
+				if !ok {
+					continue
+				}
+			}
+			if err := killSession(chosen.session); err != nil {
+				return "", "", err
+			}
+			continue
+
 		case keyMode, keyModeBack:
 			if m == modeDir {
 				m = modeSession
@@ -315,6 +341,37 @@ func navigate(root string) (name, dir string, err error) {
 		}
 		return chosen.name, chosen.dir, nil
 	}
+}
+
+// confirm asks a yes or no question, answered with the same arrows as
+// everything else. The cursor starts on no, and escape is no.
+func confirm(question string) (bool, error) {
+	_, index, err := present(
+		[]string{"0\t\tno", "1\t\tyes"},
+		[]string{
+			"--delimiter=\t",
+			"--with-nth=3..",
+			"--height=100%",
+			"--layout=reverse",
+			"--no-sort",
+			"--no-info",
+			"--prompt=" + question + " ",
+			"--header=↑↓ choose   ⏎ confirm",
+		},
+	)
+	if err != nil {
+		return false, err
+	}
+	return index == 1, nil
+}
+
+// killSession ends a session and every client attached to it.
+func killSession(name string) error {
+	out, err := exec.Command("zmx", "kill", name).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("zmx kill %s: %s", name, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // run presents the picker and attaches to what it answers.

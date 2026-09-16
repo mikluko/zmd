@@ -16,11 +16,17 @@ import (
 var errCancelled = errors.New("cancelled")
 
 // keys the picker reports rather than acting on itself.
+//
+// Delete kills and backspace does not, because backspace is how a query is
+// corrected: a filter typed to find the session to kill would otherwise be
+// one keystroke from killing whatever the cursor had been left on.
 const (
 	keyEnter    = ""
 	keyMode     = "tab"
-	keyNew      = "alt-enter"
 	keyModeBack = "shift-tab"
+	keyNew      = "alt-enter"
+	keyKill     = "delete"
+	keyKillHard = "ctrl-delete"
 )
 
 // runFzf presents lines and returns what fzf wrote and the code it ended on.
@@ -76,11 +82,16 @@ func present(lines []string, args []string) (key string, index int, err error) {
 	default:
 		return "", 0, fmt.Errorf("picker exited %d", code)
 	}
-	if len(written) < 2 {
+	if len(written) == 0 {
 		return "", 0, errCancelled
 	}
 
-	key = written[0]
+	// The key leads the output only where one was expected, and a picker
+	// answering a question expects none: the selection is the last line
+	// either way.
+	if len(written) > 1 {
+		key = written[0]
+	}
 	field, _, _ := strings.Cut(written[len(written)-1], "\t")
 	index, err = strconv.Atoi(field)
 	if err != nil {

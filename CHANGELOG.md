@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - One picker of two lists in place of `pick` and `new`: the directories a session can be in, and the sessions there are, with `tab` between them. A directory carries one circle per session in it, filled where a client is attached and hollow where none is, counted by the directory a session runs in rather than by its name.
 - `enter` on a directory attaches the session there, starts one where there is none, and opens that directory's sessions where there are several. `alt-enter` starts another under a label typed at the prompt, named `org.repo+label`. There is no `ctrl-enter`: a terminal sends `enter`'s own byte for it.
+- `delete` kills the session under the cursor after asking, and `ctrl-delete` without asking. Backspace kills nothing: it is how a query is corrected.
 - The cursor starts on the directory the terminal was opened in, closest match winning, so a worktree answers with itself rather than with its repository.
 - The query sits at the top, and the preview beside the list or below it as the terminal's shape allows, or not at all where the list would be left unreadable.
 - fzf is a library rather than a command, so a mode is a loop here and each list is free to show its own columns.
