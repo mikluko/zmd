@@ -2,8 +2,8 @@
 //
 // zmx persists terminal sessions and deliberately provides no windows, tabs
 // or splits. What it also provides no opinion about is which session you
-// want, which is the gap this fills: `pick` moves between running sessions,
-// `new` starts one in a repository or one of its worktrees.
+// want, which is the gap this fills: two lists, one of the directories a
+// session can be in and one of the sessions there are, with tab between them.
 package main
 
 import (
@@ -20,18 +20,20 @@ var version = "devel"
 const usage = `zmx-nav selects and starts zmx sessions.
 
 Usage:
-  zmx-nav pick [--mode flat|dir|repo]   Attach to a running session
-  zmx-nav new                           Start one in a repository or worktree
-  zmx-nav version                       Print the version
+  zmx-nav            Pick a directory or a session, and attach
+  zmx-nav version    Print the version
 
 Options:
   --root DIR    Where repositories live (default ~/Forge, or $ZMX_NAV_ROOT)
 
-In the picker: tab cycles the grouping, shift-tab goes back.
+In the picker:
+  tab            between the directories and the sessions
+  enter          attach to the session here, or start one
+  alt-enter      start another session here, under a label you give
 `
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	if err := main_(os.Args[1:]); err != nil {
 		if errors.Is(err, errCancelled) {
 			os.Exit(130)
 		}
@@ -40,62 +42,24 @@ func main() {
 	}
 }
 
-func run(argv []string) error {
-	if len(argv) == 0 {
-		fmt.Fprint(os.Stderr, usage)
-		return errors.New("no command given")
+func main_(argv []string) error {
+	if len(argv) > 0 {
+		switch argv[0] {
+		case "version", "--version", "-v":
+			fmt.Println(version)
+			return nil
+		case "help", "--help", "-h":
+			fmt.Print(usage)
+			return nil
+		}
 	}
 
-	command, rest := argv[0], argv[1:]
-	switch command {
-	case "pick":
-		fs := flag.NewFlagSet("pick", flag.ContinueOnError)
-		mode := fs.String("mode", modeRepo, "grouping: flat, dir or repo")
-		render := fs.String("render", "", "print the lines for a grouping and exit; used by the picker's reload")
-		cycle := fs.String("cycle", "", "print the actions for the next or previous grouping; used by the picker's tab")
-		root := fs.String("root", defaultRoot(), "where repositories live")
-		if err := fs.Parse(rest); err != nil {
-			return err
-		}
-		switch *cycle {
-		case "":
-		case "next":
-			return runCycle(true)
-		case "prev":
-			return runCycle(false)
-		default:
-			return fmt.Errorf("unknown direction %q", *cycle)
-		}
-		if *render != "" {
-			if !validMode(*render) {
-				return fmt.Errorf("unknown grouping %q", *render)
-			}
-			return runPick(*render, *root, true)
-		}
-		if !validMode(*mode) {
-			return fmt.Errorf("unknown grouping %q", *mode)
-		}
-		return runPick(*mode, *root, false)
-
-	case "new":
-		fs := flag.NewFlagSet("new", flag.ContinueOnError)
-		root := fs.String("root", defaultRoot(), "where repositories live")
-		if err := fs.Parse(rest); err != nil {
-			return err
-		}
-		return runNew(*root)
-
-	case "version", "--version", "-v":
-		fmt.Println(version)
-		return nil
-
-	case "help", "--help", "-h":
-		fmt.Print(usage)
-		return nil
+	fs := flag.NewFlagSet("zmx-nav", flag.ContinueOnError)
+	root := fs.String("root", defaultRoot(), "where repositories live")
+	if err := fs.Parse(argv); err != nil {
+		return err
 	}
-
-	fmt.Fprint(os.Stderr, usage)
-	return fmt.Errorf("unknown command %q", command)
+	return run(*root)
 }
 
 // defaultRoot is where repositories are looked for: $ZMX_NAV_ROOT, else

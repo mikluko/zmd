@@ -1,0 +1,2 @@
+# `go build` in the checkout leaves the binary beside the source it built.
+/zmx-nav

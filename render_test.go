@@ -3,31 +3,15 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
-// names returns the hidden first field of each rendered line, which is what
-// fzf hands back and what the caller attaches to.
-func names(lines []string) []string {
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		out[i], _, _ = strings.Cut(l, "\t")
-	}
-	return out
-}
-
-// displays returns what fzf shows and searches.
-func displays(lines []string) []string {
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		_, out[i], _ = strings.Cut(l, "\t")
-	}
-	return out
-}
-
-// scene builds a root holding one repository, one of its worktrees, and
-// returns sessions sitting in those plus one outside any repository.
+// scene builds a root holding one repository, one of its worktrees and a
+// second repository, and returns sessions sitting in those plus one outside
+// any repository.
 func scene(t *testing.T) (root string, found []Session) {
 	t.Helper()
 	root = t.TempDir()
@@ -39,196 +23,224 @@ func scene(t *testing.T) (root string, found []Session) {
 
 	return root, []Session{
 		{Name: "mikluko.octant", Clients: "1", Dir: repo},
+		{Name: "mikluko.octant+review", Clients: "0", Dir: repo},
 		{Name: "mikluko.octant@918-arrival", Clients: "0", Dir: tree},
-		{Name: "uptime-com.api", Clients: "0", Dir: other},
-		{Name: "scratch", Clients: "2", Dir: loose},
+		{Name: "supa-7f3a", Clients: "2", Dir: other},
+		{Name: "scratch", Clients: "0", Dir: loose},
 	}
 }
 
-func TestRenderPickRepoGroupsWorktreesUnderTheirRepository(t *testing.T) {
-	root, found := scene(t)
-	lines := renderPick(found, modeRepo, root)
-
-	want := []string{
-		"mikluko.octant",
-		"mikluko.octant@918-arrival",
-		"uptime-com.api",
-		"scratch", // outside any repository, so last
-	}
-	got := names(lines)
-	if len(got) != len(want) {
-		t.Fatalf("got %d lines, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("line %d: got %q, want %q", i, got[i], want[i])
+// find returns the row for a target name.
+func find(t *testing.T, rows []row, name string) row {
+	t.Helper()
+	for _, r := range rows {
+		if r.name == name {
+			return r
 		}
 	}
+	t.Fatalf("no row for %q", name)
+	return row{}
+}
 
-	// The repository leads the display, and the worktree label follows it.
-	if !strings.HasPrefix(displays(lines)[0], "mikluko/octant") {
-		t.Errorf("repo column missing: %q", displays(lines)[0])
+func TestCirclesFillWithAClient(t *testing.T) {
+	got := circles([]Session{
+		{Name: "a", Clients: "1"},
+		{Name: "b", Clients: "0"},
+		{Name: "c", Clients: ""},
+	})
+	if got != attached+detached+detached {
+		t.Errorf("rendered %q, want one filled and two hollow", got)
 	}
-	if !strings.Contains(displays(lines)[1], "918-arrival") {
-		t.Errorf("worktree label missing: %q", displays(lines)[1])
-	}
-	// The main worktree is marked ".", not by repeating the repository.
-	if !strings.Contains(displays(lines)[0], " .  ") {
-		t.Errorf("main worktree not marked: %q", displays(lines)[0])
+	if circles(nil) != "" {
+		t.Errorf("a directory with no sessions rendered %q", circles(nil))
 	}
 }
 
-func TestRenderPickDirSortsByDirectory(t *testing.T) {
-	root, found := scene(t)
-	got := displays(renderPick(found, modeDir, root))
-	for i := 1; i < len(got); i++ {
-		if got[i-1] > got[i] {
-			t.Errorf("not sorted by directory: %q before %q", got[i-1], got[i])
+// The marker counts sessions by the directory they run in, so a session this
+// tool never named still counts against the repository it sits in.
+func TestDirRowsCountSessionsByDirectory(t *testing.T) {
+	root, live := scene(t)
+	rows := dirRows(targets(root), live)
+
+	octant := find(t, rows, "mikluko.octant")
+	if octant.cells[0] != attached+detached {
+		t.Errorf("two sessions in the repository rendered %q", octant.cells[0])
+	}
+	if !octant.several {
+		t.Error("two sessions is more than enter can choose between")
+	}
+	if octant.session != "" {
+		t.Errorf("a directory with two sessions named one to attach: %q", octant.session)
+	}
+
+	api := find(t, rows, "uptime-com.api")
+	if api.cells[0] != attached {
+		t.Errorf("supacode's session rendered %q, want one filled circle", api.cells[0])
+	}
+	if api.session != "supa-7f3a" {
+		t.Errorf("enter would attach %q, want the session that is there", api.session)
+	}
+
+	tree := find(t, rows, "mikluko.octant@918-arrival")
+	if tree.cells[0] != detached {
+		t.Errorf("the worktree rendered %q, want one hollow circle", tree.cells[0])
+	}
+}
+
+// A repository with nothing running is where a session gets created, under
+// the name the target carries.
+func TestDirRowsLeaveEmptyDirectoriesToBeCreated(t *testing.T) {
+	root, _ := scene(t)
+	rows := dirRows(targets(root), nil)
+
+	for _, r := range rows {
+		if r.cells[0] != "" {
+			t.Errorf("%s rendered %q with no sessions anywhere", r.name, r.cells[0])
+		}
+		if r.session != "" || r.several {
+			t.Errorf("%s would attach %q rather than create", r.name, r.session)
+		}
+		if r.dir == "" {
+			t.Errorf("%s has nowhere to be created", r.name)
 		}
 	}
 }
 
-func TestRenderPickFlatSortsByName(t *testing.T) {
-	root, found := scene(t)
-	got := names(renderPick(found, modeFlat, root))
-	want := []string{"mikluko.octant", "mikluko.octant@918-arrival", "scratch", "uptime-com.api"}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("line %d: got %q, want %q", i, got[i], want[i])
+func TestSessionRowsFilterToOneDirectory(t *testing.T) {
+	root, live := scene(t)
+	repo := filepath.Join(root, "mikluko", "octant")
+
+	all := sessionRows(live, "")
+	if len(all) != len(live) {
+		t.Errorf("listed %d of %d sessions", len(all), len(live))
+	}
+
+	in := sessionRows(live, repo)
+	if len(in) != 2 {
+		t.Fatalf("the repository holds 2 sessions, listed %d", len(in))
+	}
+	for _, r := range in {
+		if !strings.HasPrefix(r.session, "mikluko.octant") {
+			t.Errorf("%q is not a session in the repository", r.session)
+		}
+		if r.dir != "" {
+			t.Errorf("%q carries a directory; it is attached where it runs", r.session)
 		}
 	}
 }
 
-// Every grouping must keep the name in field one, because that is what the
-// preview reads as {1} and what the caller attaches to.
-func TestRenderPickKeepsTheNameInFieldOne(t *testing.T) {
-	root, found := scene(t)
-	for _, mode := range modes {
-		for _, line := range renderPick(found, mode, root) {
-			name, display, ok := strings.Cut(line, "\t")
-			if !ok {
-				t.Fatalf("%s: line has no tab: %q", mode, line)
-			}
-			if strings.Contains(display, "\t") {
-				t.Errorf("%s: display carries a tab, fzf would split it: %q", mode, display)
-			}
-			var known bool
-			for _, s := range found {
-				known = known || s.Name == name
-			}
-			if !known {
-				t.Errorf("%s: field one %q names no session", mode, name)
-			}
+// The cursor starts on the directory the pane was opened in, and a worktree
+// answers with itself rather than with the repository above it.
+func TestAtTakesTheClosestDirectory(t *testing.T) {
+	root, live := scene(t)
+	rows := dirRows(targets(root), live)
+	repo := filepath.Join(root, "mikluko", "octant")
+	tree := filepath.Join(repo, "tmp", "worktrees", "octant-918-arrival")
+
+	if got := at(rows, repo); got < 0 || rows[got].name != "mikluko.octant" {
+		t.Errorf("the repository selected row %d", got)
+	}
+	if got := at(rows, filepath.Join(repo, "internal", "deep")); got < 0 || rows[got].name != "mikluko.octant" {
+		t.Errorf("a subdirectory selected row %d, want the repository", got)
+	}
+	if got := at(rows, tree); got < 0 || rows[got].name != "mikluko.octant@918-arrival" {
+		t.Errorf("the worktree selected row %d, want the worktree", got)
+	}
+	if got := at(rows, os.TempDir()); got != -1 {
+		t.Errorf("a directory under no target selected row %d, want none", got)
+	}
+	if got := at(rows, ""); got != -1 {
+		t.Errorf("no directory selected row %d, want none", got)
+	}
+}
+
+// fzf is told to search and show the display only, so the index it hands back
+// has to lead every line and the preview's argument follow it.
+func TestLinesLeadWithTheIndex(t *testing.T) {
+	root, live := scene(t)
+	rows := dirRows(targets(root), live)
+
+	for i, line := range lines(rows) {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			t.Fatalf("line %d has %d fields, want 3: %q", i, len(parts), line)
+		}
+		if parts[0] != strconv.Itoa(i) {
+			t.Errorf("line %d leads with %q", i, parts[0])
+		}
+		if parts[1] != rows[i].dir {
+			t.Errorf("line %d previews %q, want %q", i, parts[1], rows[i].dir)
 		}
 	}
 }
 
-func TestRenderPickOnNoSessions(t *testing.T) {
-	if got := renderPick(nil, modeRepo, t.TempDir()); got != nil {
-		t.Errorf("got %v, want nil", got)
+// The preview follows the shape of the space: beside the list where the
+// terminal is wide, below it where it is not, and nowhere at all where what
+// is left of the list would be unreadable.
+func TestPreviewLayoutFollowsTheShapeOfTheTerminal(t *testing.T) {
+	for _, c := range []struct {
+		cols, rows int
+		want       string
+	}{
+		{200, 50, "right"},
+		{120, 40, "right"},
+		{119, 40, "up"},
+		{80, 24, "up"},
+		{79, 40, ""},
+		{200, 14, ""},
+	} {
+		got := previewLayout(c.cols, c.rows)
+		switch {
+		case c.want == "" && got != "":
+			t.Errorf("%dx%d previews as %q, want none", c.cols, c.rows, got)
+		case c.want != "" && !strings.HasPrefix(got, c.want):
+			t.Errorf("%dx%d previews as %q, want %s", c.cols, c.rows, got, c.want)
+		}
+	}
+	if !strings.Contains(previewLayout(200, 50), "<100(up") {
+		t.Error("the wide layout carries no alternative for a narrowed window")
 	}
 }
 
 func TestTargetsListsRepositoriesAndTheirWorktrees(t *testing.T) {
-	root := t.TempDir()
-	repo := repoAt(t, filepath.Join(root, "mikluko", "octant"))
-	worktreeAt(t, repo, "octant-918", filepath.Join(root, "elsewhere", "octant-918"))
-	repoAt(t, filepath.Join(root, "uptime-com", "api"))
-
-	got := targets(root)
-	want := []Target{
-		{Name: "mikluko.octant", Dir: repo},
-		{Name: "mikluko.octant@918", Dir: filepath.Join(root, "elsewhere", "octant-918")},
-		{Name: "uptime-com.api", Dir: filepath.Join(root, "uptime-com", "api")},
+	root, _ := scene(t)
+	var names []string
+	for _, tgt := range targets(root) {
+		names = append(names, tgt.Name)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d targets, want %d: %+v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("target %d: got %+v, want %+v", i, got[i], want[i])
-		}
+	want := []string{"mikluko.octant", "mikluko.octant@918-arrival", "uptime-com.api"}
+	if strings.Join(names, " ") != strings.Join(want, " ") {
+		t.Errorf("targets are %q, want %q", names, want)
 	}
 }
 
-// Every name targets offers must be one zmx can actually create.
+// zmx names each session's socket after it, so a name carrying a separator
+// creates nothing and says nothing.
 func TestTargetsNamesCarryNoSeparator(t *testing.T) {
-	root := t.TempDir()
-	repoAt(t, filepath.Join(root, "uptime-com", "up2-monitoring"))
-	for _, target := range targets(root) {
-		if strings.Contains(target.Name, string(os.PathSeparator)) {
-			t.Errorf("%q carries a separator, so zmx would create nothing", target.Name)
+	root, _ := scene(t)
+	for _, tgt := range targets(root) {
+		if strings.Contains(tgt.Name, "/") {
+			t.Errorf("%q carries a separator", tgt.Name)
 		}
-	}
-}
-
-func TestRenderNewMarksRunningSessionsAndCarriesTheDirectory(t *testing.T) {
-	root := t.TempDir()
-	repoAt(t, filepath.Join(root, "mikluko", "octant"))
-	repoAt(t, filepath.Join(root, "uptime-com", "api"))
-
-	found := targets(root)
-	lines := renderNew(found, map[string]bool{"mikluko.octant": true})
-	if len(lines) != 2 {
-		t.Fatalf("got %d lines, want 2", len(lines))
-	}
-
-	name, rest, _ := strings.Cut(lines[0], "\t")
-	dir, display, _ := strings.Cut(rest, "\t")
-	if name != "mikluko.octant" {
-		t.Errorf("name %q", name)
-	}
-	if dir != filepath.Join(root, "mikluko", "octant") {
-		t.Errorf("dir %q", dir)
-	}
-	if !strings.Contains(display, "running") {
-		t.Errorf("display does not mark it running: %q", display)
-	}
-	if strings.Contains(displays(lines[1:])[0], "running") {
-		t.Errorf("second target wrongly marked running")
 	}
 }
 
 func TestAlignPadsToTheWidestCell(t *testing.T) {
 	got := align([][]string{
-		{"a", "one"},
-		{"bbbb", "two"},
+		{"●", "short", "x"},
+		{"", "a-much-longer-name", "y"},
 	})
 	if len(got) != 2 {
-		t.Fatalf("got %d lines", len(got))
+		t.Fatalf("aligned %d rows, want 2", len(got))
 	}
-	if strings.Contains(got[0], "\t") || strings.Contains(got[1], "\t") {
-		t.Errorf("tabs survived alignment: %q", got)
-	}
-	// The second column must start at the same offset on both lines.
-	if strings.Index(got[0], "one") != strings.Index(got[1], "two") {
+	// Counted in runes, as the terminal and tabwriter both count: a circle is
+	// one column and three bytes.
+	if column(got[0], "x") != column(got[1], "y") {
 		t.Errorf("columns not aligned: %q / %q", got[0], got[1])
 	}
 }
 
-func TestCycleModeWrapsInBothDirections(t *testing.T) {
-	mode := modes[0]
-	for range modes {
-		mode = cycleMode(mode, true)
-	}
-	if mode != modes[0] {
-		t.Errorf("forward through every grouping landed on %q, want %q", mode, modes[0])
-	}
-	for _, m := range modes {
-		if back := cycleMode(cycleMode(m, true), false); back != m {
-			t.Errorf("%q forward then back landed on %q", m, back)
-		}
-	}
-}
-
-// tab reads the grouping back out of the prompt, so the two must agree.
-func TestPromptModeReadsBackPrompt(t *testing.T) {
-	for _, m := range modes {
-		if got := promptMode(prompt(m)); got != m {
-			t.Errorf("prompt %q read back as %q", prompt(m), got)
-		}
-	}
-	if got := promptMode("> "); got != modes[0] {
-		t.Errorf("a foreign prompt read back as %q, want %q", got, modes[0])
-	}
+// column returns how many columns into line the given cell starts.
+func column(line, cell string) int {
+	return utf8.RuneCountInString(line[:strings.Index(line, cell)])
 }

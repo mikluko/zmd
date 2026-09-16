@@ -1,19 +1,77 @@
 # zmx-nav
 
-Session navigation for [zmx](https://zmx.sh): pick a running session, or start
-one in a repository or one of its worktrees.
+Session navigation for [zmx](https://zmx.sh): two lists, one of the places a
+session can be and one of the sessions there are.
 
 zmx persists terminal sessions and, by design, provides no windows, tabs or
 splits. What it also has no opinion about is *which* session you want. This
 fills that gap and nothing else.
 
 ```sh
-zmx-nav pick    # attach to a running session
-zmx-nav new     # start one in a repository or worktree
+zmx-nav
 ```
 
-Both present [fzf](https://github.com/junegunn/fzf) and `exec` into
-`zmx attach`.
+## The two lists
+
+`tab` moves between them, and that is the whole of the navigation.
+
+**Directories** are every repository two levels below the root and every
+worktree git records for one. A worktree is offered wherever it physically
+sits: beside the repository under `.claude/worktrees/`, or far away under
+`~/.claude-squad/worktrees/`.
+
+```
+●○  uptime-com.upnats      ~/Forge/uptime-com/upnats
+○   mikluko.octant         ~/Forge/mikluko/octant
+    mikluko.dotfiles       ~/Forge/mikluko/dotfiles
+```
+
+One circle per session in that directory, filled where a client is attached
+and hollow where none is. Sessions are counted by the directory they run in
+rather than by their name, so a session started by something else — supacode
+names its own `supa-<uuid>` — still counts against the repository it sits in.
+
+**Sessions** are what is running, in the same order the circles are drawn, so
+the second circle and the second row are the same session.
+
+## What the keys do
+
+| | |
+| --- | --- |
+| `enter` | Attach to the session here. Where there is none, start one. Where there are several, open the session list for this directory. |
+| `alt-enter` | Start another session here, under a label you type. |
+| `tab` | Between the two lists. |
+| `esc` | Leave. |
+
+There is no `ctrl-enter`: a terminal sends the same byte for it as for
+`enter`, and fzf has no name for a key it cannot be told apart from.
+
+Sessions are named `org.repo`, a worktree adds `@label`, and a second session
+in the same place adds `+label`:
+
+```
+uptime-com.upnats
+uptime-com.upnats@2046-eight-token-subjects
+uptime-com.upnats+review
+```
+
+The org qualifier is there because a repository name repeats across orgs, and
+a bare name would send the second one into the first one's session. The
+separator is a dot rather than a slash: **zmx names each session's unix socket
+after it, so `zmx attach org/repo` creates nothing and says nothing.**
+
+## Where it opens
+
+The cursor starts on the directory the terminal was opened in, so a new pane
+is one keystroke away from where it stands. The closest directory wins, which
+means a worktree answers with itself rather than with the repository above it,
+and a path under neither leaves the cursor at the top.
+
+## The preview
+
+Beside the list where the terminal is wide, below it where it is not, and left
+out entirely where what remained of the list would be unreadable. A directory
+previews as a listing, a session as its own scrollback through `zmx history`.
 
 ## Install
 
@@ -27,59 +85,8 @@ Or from source:
 go install github.com/mikluko/zmx-nav@latest
 ```
 
-Needs `zmx` and `fzf` 0.46 or newer on `PATH`. `zmx-nav new` previews with
-[`lsd`](https://github.com/lsd-rs/lsd).
-
-## pick
-
-Three groupings over the same sessions, cycled in place with `tab` without
-leaving the picker. `shift-tab` goes back, and the prompt names the one in
-view:
-
-| Grouping | |
-| --- | --- |
-| flat | by session name |
-| dir | by working directory |
-| repo | by repository, worktrees under the repository they belong to |
-
-```
-mikluko/dotfiles   .            mikluko.dotfiles            c:0
-mikluko/octant     918-arrival  mikluko.octant@918-arrival  c:0
-mikluko/slopguard  heldout      mikluko.slopguard@heldout   c:0
-~                               scratch                     c:0
-```
-
-The grouping is a leading column plus a sort, not a header row, because fzf
-has no unselectable line. Every line stays selectable, and the group stays
-matchable by typing it.
-
-A binding is fixed for the life of the picker, so `tab` cannot name the
-grouping it moves to. It reads the current one back out of the prompt and
-prints the actions that reload the next.
-
-The preview is `zmx history`, so a session shows its own scrollback.
-
-## new
-
-Every repository two levels below the root, and every worktree git records for
-one. A worktree is offered wherever it physically sits: beside the repository
-under `.claude/worktrees/`, or far away under `~/.claude-squad/worktrees/`.
-
-Sessions are named `org.repo`, and a worktree adds `@label`:
-
-```
-~/Forge/mikluko/dotfiles                             mikluko.dotfiles
-~/Forge/uptime-com/up2-monitoring                    uptime-com.up2-monitoring
-.../up2-monitoring/.claude/worktrees/up2-mon-rb-517  uptime-com.up2-monitoring@rb-517
-```
-
-The org qualifier is there because a repository name repeats across orgs, and
-a bare name would send the second one into the first one's session. The
-separator is a dot rather than a slash: **zmx names each session's unix socket
-after it, so `zmx attach org/repo` creates nothing and says nothing.**
-
-A name already running is attached rather than created, so `new` doubles as a
-jump to a repository whose session is up.
+Needs `zmx` on `PATH`, and `lsd` for the directory preview. fzf is a library
+here rather than a command, so it does not have to be installed.
 
 ## Configuration
 
@@ -90,27 +97,15 @@ jump to a repository whose session is up.
 
 The default is `~/Forge`. The layout expected below it is `<org>/<repo>`.
 
-## Binding it to a key
+## Holding a pane open
 
-zmx leaves window management to the terminal, so the natural home for these is
-a terminal keybinding. In Ghostty, send a byte string the shell receives from
-nothing else:
+Run it in a loop, and the pane outlives the sessions it shows: zmx's client
+takes `ctrl+\` before the PTY sees it, so a detach lands back here from inside
+whatever the session was running.
 
 ```
-keybind = cmd+alt+d=csi:27;7;100~
-keybind = cmd+alt+n=csi:27;7;110~
-```
-
-and in `.zshrc`, run the command on a fresh line, keeping whatever was
-half-typed:
-
-```zsh
-function zmx-pick-widget() { zle push-input; BUFFER="zmx-nav pick"; zle accept-line }
-function zmx-new-widget() { zle push-input; BUFFER="zmx-nav new"; zle accept-line }
-zle -N zmx-pick-widget
-zle -N zmx-new-widget
-bindkey '\e[27;7;100~' zmx-pick-widget
-bindkey '\e[27;7;110~' zmx-new-widget
+# Ghostty
+command = /bin/zsh -lc 'while zmx-nav; do :; done'
 ```
 
 ## Why it reads git rather than running it
