@@ -1,11 +1,13 @@
-module github.com/mikluko/zmx-nav
+module github.com/mikluko/zmx-deck
 
 go 1.27
 
-require github.com/junegunn/fzf v0.74.4
+require (
+	github.com/charlievieth/fastwalk v1.0.14
+	github.com/junegunn/fzf v0.74.4
+)
 
 require (
-	github.com/charlievieth/fastwalk v1.0.14 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
 	github.com/gdamore/tcell/v2 v2.9.0 // indirect
 	github.com/junegunn/go-shellwords v0.0.0-20250127100254-2aa3b3277741 // indirect

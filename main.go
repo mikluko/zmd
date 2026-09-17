@@ -1,9 +1,9 @@
-// Command zmx-nav selects and starts zmx sessions.
+// Command zmx-deck selects and starts zmx sessions.
 //
 // zmx persists terminal sessions and deliberately provides no windows, tabs
 // or splits. What it also provides no opinion about is which session you
-// want, which is the gap this fills: three lists — the filesystem, the
-// repositories in it, and the sessions there are — with tab between them.
+// want, which is the gap this fills: one list holding the sessions there are
+// and the repositories a session can be started in, narrowed by typing.
 package main
 
 import (
@@ -15,22 +15,24 @@ import (
 // version is stamped by the release build; `devel` means built from source.
 var version = "devel"
 
-const usage = `zmx-nav selects and starts zmx sessions.
+const usage = `zmx-deck selects and starts zmx sessions.
 
 Usage:
-  zmx-nav            Pick a folder, a repository or a session, and attach
-  zmx-nav version    Print the version
+  zmx-deck            Pick a session or a repository, and attach
+  zmx-deck version    Print the version
+
+The picker holds one list: the sessions there are, then the repositories a
+session can be started in. Typing narrows both at once.
 
 In the picker:
-  tab            between folders, repositories and sessions
-  enter          in folders, go into the directory; elsewhere, attach
-  alt-enter      start a session for the directory, under a label where one
-                 is already running there
-  left           in folders, the parent directory
-  ctrl-f         in folders, everything below here rather than its children
-  delete         kill the session, after asking; ctrl-delete without asking
-
-A pane opens on the list it was last left on in the directory it stands in.
+  enter          attach the session, or start one in the repository; where
+                 what was typed matches nothing, start a session under that
+                 name here
+  alt-enter      start another session where the cursor stands, under a label
+                 you type
+  ctrl-n         start a session named after what you typed, matched or not
+  tab            mark, for a kill that takes several at once
+  delete         kill, after asking; ctrl-delete without asking
 `
 
 func main() {
@@ -38,7 +40,7 @@ func main() {
 		if errors.Is(err, errCancelled) {
 			os.Exit(130)
 		}
-		fmt.Fprintln(os.Stderr, "zmx-nav: "+err.Error())
+		fmt.Fprintln(os.Stderr, "zmx-deck: "+err.Error())
 		os.Exit(1)
 	}
 }

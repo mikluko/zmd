@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+
+	"github.com/charlievieth/fastwalk"
 )
 
 // skipped are directory names a walk does not descend into. They hold no
@@ -31,9 +34,17 @@ var skipped = map[string]bool{
 // repositories returns every directory below root holding a `.git`, which is
 // a repository and a linked worktree alike: git records a worktree with a
 // `.git` file where a repository has a directory, and both are places to work.
+//
+// The walk is parallel because it is what the picker waits on: a home
+// directory is some fifteen thousand directories, and one `stat` per
+// directory issued serially is most of a second before anything is drawn.
+// Callbacks run on several goroutines, so what they touch is guarded and the
+// result is sorted rather than arriving in order.
 func repositories(root string) []string {
+	var mu sync.Mutex
 	var found []string
-	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+
+	fastwalk.Walk(&fastwalk.Config{}, root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -45,48 +56,14 @@ func repositories(root string) []string {
 			return fs.SkipDir
 		}
 		if marker, err := os.Stat(filepath.Join(path, ".git")); err == nil && marker != nil {
+			mu.Lock()
 			found = append(found, path)
+			mu.Unlock()
 			// A repository's own subdirectories are not repositories, but the
 			// worktrees it keeps under .claude are, so the walk goes on.
 		}
 		return nil
 	})
 	sort.Strings(found)
-	return found
-}
-
-// folders returns the directories directly below dir, in name order.
-func folders(dir string) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var found []string
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") && e.Name() != ".claude" {
-			continue
-		}
-		found = append(found, filepath.Join(dir, e.Name()))
-	}
-	return found
-}
-
-// under returns every directory below dir, for searching one level's subtree
-// rather than walking it a level at a time.
-func under(dir string) []string {
-	var found []string
-	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil
-		}
-		if path == dir {
-			return nil
-		}
-		if skipped[d.Name()] || strings.HasPrefix(d.Name(), ".") {
-			return fs.SkipDir
-		}
-		found = append(found, path)
-		return nil
-	})
 	return found
 }

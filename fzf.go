@@ -22,20 +22,23 @@ var errCancelled = errors.New("cancelled")
 // one keystroke from killing whatever the cursor had been left on.
 const (
 	keyEnter    = ""
-	keyMode     = "tab"
-	keyModeBack = "shift-tab"
 	keyNew      = "alt-enter"
+	keyNamed    = "ctrl-n"
 	keyKill     = "delete"
 	keyKillHard = "ctrl-delete"
-	keyUp       = "left"
-	keyFind     = "ctrl-f"
 )
+
+// choice is what one turn of the picker answered.
+type choice struct {
+	query string // what was typed, whether or not it matched anything
+	key   string // the key pressed, empty for enter
+	rows  []int  // the marked rows, or the one under the cursor
+}
 
 // runFzf presents lines and returns what fzf wrote and the code it ended on.
 //
-// fzf runs in this process rather than as a command: a mode is then a loop
-// here rather than a reload fzf runs against this binary, and each mode is
-// free to show different columns, which one picker cannot.
+// fzf runs in this process rather than as a command: acting on a key is then
+// a turn of a loop here rather than a reload fzf runs against this binary.
 func runFzf(lines []string, args []string) (int, []string, error) {
 	opts, err := fzf.ParseOptions(true, args)
 	if err != nil {
@@ -50,7 +53,7 @@ func runFzf(lines []string, args []string) (int, []string, error) {
 	opts.Input = in
 
 	// Buffered past anything fzf writes, since nothing drains it until Run
-	// returns: --expect adds a line of its own before the selection.
+	// returns: the query and the expected key both precede the selection.
 	out := make(chan string, len(lines)+8)
 	opts.Output = out
 
@@ -67,39 +70,72 @@ func runFzf(lines []string, args []string) (int, []string, error) {
 	return code, written, nil
 }
 
-// present runs one picker and returns the key pressed, empty for enter, and
-// the index of the line it was pressed on.
+// present runs the picker and returns what it answered.
 //
-// Every line leads with its own index, so a choice comes back as a row the
-// caller already holds rather than as text it has to read back.
-func present(lines []string, args []string) (key string, index int, err error) {
+// Every line leads with its own index, so a choice comes back as rows the
+// caller already holds rather than as text it has to read back. The arguments
+// must carry --print-query and --expect, which is what puts the query and the
+// key ahead of the rows.
+func present(lines []string, args []string) (choice, error) {
 	code, written, err := runFzf(lines, args)
 	if err != nil {
-		return "", 0, err
+		return choice{}, err
+	}
+	switch code {
+	case fzf.ExitOk:
+	case fzf.ExitNoMatch:
+		// A query matching nothing is an answer rather than a failure: it
+		// names a session that does not exist yet. fzf writes the query and
+		// the key either way, and only the rows are missing.
+	case fzf.ExitInterrupt:
+		return choice{}, errCancelled
+	default:
+		return choice{}, fmt.Errorf("picker exited %d", code)
+	}
+	return parseChoice(written)
+}
+
+// parseChoice reads fzf's output: the query, then the key, then a line per
+// selected row.
+func parseChoice(written []string) (choice, error) {
+	if len(written) < 2 {
+		return choice{}, errCancelled
+	}
+	answer := choice{query: written[0], key: written[1]}
+	for _, line := range written[2:] {
+		field, _, _ := strings.Cut(line, "\t")
+		index, err := strconv.Atoi(field)
+		if err != nil {
+			return choice{}, fmt.Errorf("unreadable selection %q", line)
+		}
+		answer.rows = append(answer.rows, index)
+	}
+	return answer, nil
+}
+
+// pick runs a picker that answers with one row and nothing else, and returns
+// the index that row leads with.
+func pick(lines []string, args []string) (int, error) {
+	code, written, err := runFzf(lines, args)
+	if err != nil {
+		return 0, err
 	}
 	switch code {
 	case fzf.ExitOk:
 	case fzf.ExitInterrupt, fzf.ExitNoMatch:
-		return "", 0, errCancelled
+		return 0, errCancelled
 	default:
-		return "", 0, fmt.Errorf("picker exited %d", code)
+		return 0, fmt.Errorf("picker exited %d", code)
 	}
 	if len(written) == 0 {
-		return "", 0, errCancelled
-	}
-
-	// The key leads the output only where one was expected, and a picker
-	// answering a question expects none: the selection is the last line
-	// either way.
-	if len(written) > 1 {
-		key = written[0]
+		return 0, errCancelled
 	}
 	field, _, _ := strings.Cut(written[len(written)-1], "\t")
-	index, err = strconv.Atoi(field)
+	index, err := strconv.Atoi(field)
 	if err != nil {
-		return "", 0, fmt.Errorf("unreadable selection %q", written[len(written)-1])
+		return 0, fmt.Errorf("unreadable selection %q", written[len(written)-1])
 	}
-	return key, index, nil
+	return index, nil
 }
 
 // promptText reads a line typed into an empty picker.
@@ -131,8 +167,10 @@ func promptText(prompt, header string) (string, error) {
 
 // attach replaces this process with a zmx client attached to name.
 //
-// dir becomes the session's working directory, but only where the session is
-// being created: zmx records it once, when the daemon starts.
+// dir becomes the session's working directory only where the session is being
+// created, which is when zmx chdirs to spawn the shell. A session that already
+// exists reports its own: zmx reads the directory from the OSC 7 its shell
+// emits, so the session follows a `cd` and an attach cannot place it.
 func attach(name, dir string) error {
 	path, err := exec.LookPath("zmx")
 	if err != nil {

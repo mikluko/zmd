@@ -9,12 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- One picker of two lists in place of `pick` and `new`: the directories a session can be in, and the sessions there are, with `tab` between them. A directory carries one circle per session in it, filled where a client is attached and hollow where none is, counted by the directory a session runs in rather than by its name.
-- `enter` on a directory attaches the session there, starts one where there is none, and opens that directory's sessions where there are several. `alt-enter` starts another under a label typed at the prompt, named `org.repo+label`. There is no `ctrl-enter`: a terminal sends `enter`'s own byte for it.
-- `delete` kills the session under the cursor after asking, and `ctrl-delete` without asking. Backspace kills nothing: it is how a query is corrected.
-- The cursor starts on the directory the terminal was opened in, closest match winning, so a worktree answers with itself rather than with its repository.
-- The query sits at the top, and the preview beside the list or below it as the terminal's shape allows, or not at all where the list would be left unreadable.
-- fzf is a library rather than a command, so a mode is a loop here and each list is free to show its own columns.
+- Renamed to `zmx-deck`, from `zmx-nav`. The old name described navigating between lists, which is neither what the tool does nor what it is for; a deck is where you stand to see the whole of a thing and take it somewhere. The module path and the command both move; `go install github.com/mikluko/zmx-nav` installs nothing after this.
+- One picker of one list in place of `pick` and `new`: the sessions there are, then the repositories a session can be started in. Typing is the navigation, narrowing both kinds at once, and the kind of the row it leaves under the cursor is what decides what a key does to it.
+- `enter` attaches, and starts a session in a repository that has none. Where a repository has several it narrows the list to them rather than guessing between them, which is the same query mechanism the rest of the picker is made of. `alt-enter` starts another under a label typed at the prompt. There is no `ctrl-enter`: a terminal sends `enter`'s own byte for it.
+- A query matching nothing names a session to start where the pane stands, and `ctrl-n` forces that even where a row is highlighted.
+- `tab` marks, and `delete` kills what is marked or what is under the cursor, after asking; `ctrl-delete` without asking. Backspace kills nothing: it is how a query is corrected. The session the picker is running inside is killed last, since killing it takes the picker down with it.
+- A repository carries one circle per session in it, filled where a client is attached and hollow where none is, counted by the directory a session runs in rather than by its name.
+- The cursor starts on the row closest to the directory the terminal was opened in, so a worktree answers with itself rather than with its repository, and a directory that has a session answers with the session rather than with the offer to start a second.
+- A repository previews as `git log --graph` rather than as a directory listing, which drops the dependency on `lsd`. The preview sits beside the list or below it as the terminal's shape allows, or not at all where the list would be left unreadable.
+- Sessions are named after the path, dotted, taken relative to `~`: a repository name repeats across orgs, and a bare name would send the second one into the first one's session.
+
+### Removed
+
+- `zmx-nav switch`, `zmx-nav pick` and `zmx-nav new`. There is one picker and it is what the command runs.
+- `--root` and `ZMX_NAV_ROOT`. Repositories are looked for below `~`.
+- The groupings `tab` cycled, and with them the view the picker remembered against the directory it was opened in: one list is not a thing there is anything to remember about.
 
 ## [0.3.0] - 2026-09-16
 
@@ -37,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zmx-nav new` starts a session in any repository below `~/Forge` or in any worktree git records for one, named `org.repo` and `org.repo@label`. A name already running is attached rather than created.
 - `--root` and `ZMX_NAV_ROOT` set where repositories are looked for.
 
-[Unreleased]: https://github.com/mikluko/zmx-nav/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/mikluko/zmx-nav/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/mikluko/zmx-nav/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/mikluko/zmx-nav/releases/tag/v0.1.0
+[Unreleased]: https://github.com/mikluko/zmx-deck/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/mikluko/zmx-deck/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/mikluko/zmx-deck/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/mikluko/zmx-deck/releases/tag/v0.1.0

@@ -13,56 +13,37 @@ import (
 	"unsafe"
 )
 
-// The three lists. Folders are the filesystem, walked a level at a time;
-// repositories are the directories below home holding a `.git`; sessions are
-// what is running. tab moves between them and is the whole of the navigation.
-type mode int
+// One list, holding the sessions there are and the repositories a session can
+// be started in. Typing is the navigation: a query narrows both kinds at
+// once, and the kind of the row it is pressed on is what decides what a key
+// does. The kind travels in a field of its own so the preview can branch on
+// it without reading the row back out of what is displayed.
+type kind string
 
 const (
-	modeFolders mode = iota
-	modeRepos
-	modeSessions
+	kindSession kind = "session"
+	kindRepo    kind = "repo"
 )
 
-func (m mode) String() string {
-	switch m {
-	case modeRepos:
-		return "repos"
-	case modeSessions:
-		return "sessions"
-	}
-	return "folders"
-}
-
-func modeNamed(name string) (mode, bool) {
-	for _, m := range []mode{modeFolders, modeRepos, modeSessions} {
-		if m.String() == name {
-			return m, true
-		}
-	}
-	return 0, false
-}
-
-// next returns the view one step along, wrapping at both ends.
-func (m mode) next(forward bool) mode {
-	if forward {
-		return mode((int(m) + 1) % 3)
-	}
-	return mode((int(m) + 2) % 3)
-}
-
-// A session with a client attached is filled, one with none is hollow. The
-// column is one circle per session, in the order the session list shows them,
-// so the second circle and the second row are the same session.
+// A session with a client attached is filled, one with none is hollow. A
+// repository carries one circle per session in it, so a place with two
+// sessions is legible before its rows are read.
 const (
 	attached = "●"
 	detached = "○"
 )
 
-// row is one line of any of the lists.
+// repoMark separates the two kinds at a glance, since both stand in one list.
+const repoMark = "[repo] "
+
+// header is what the keys do.
+const header = "⏎ attach   ⌥⏎ label   ⌃n name it   ⇥ mark   ⌦ kill"
+
+// row is one line of the list.
 type row struct {
+	kind    kind
 	session string   // the session to attach to, empty where one has to be made
-	dir     string   // what the row stands for, empty for a session row
+	dir     string   // where the row stands
 	several bool     // more sessions here than one keystroke can choose between
 	cells   []string // what the line shows
 }
@@ -99,44 +80,60 @@ func byDir(live []Session) map[string][]Session {
 	return found
 }
 
-// dirRows returns one row per directory, marked with what runs in it.
-func dirRows(dirs []string, live []Session, label func(string) string) []row {
+// sessionRows returns one row per running session, in name order.
+//
+// The path is the last cell, and align leaves the last cell ragged, so a
+// session row ends with the directory it runs in. narrow depends on that.
+func sessionRows(live []Session) []row {
+	sorted := append([]Session(nil), live...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	rows := make([]row, len(sorted))
+	for i, s := range sorted {
+		rows[i] = row{
+			kind:    kindSession,
+			session: s.Name,
+			dir:     s.Dir,
+			cells:   []string{circles([]Session{s}), s.Name, shorten(s.Dir)},
+		}
+	}
+	return rows
+}
+
+// repoRows returns one row per repository, marked with what runs in it.
+//
+// The name cell holds the basename, so the path cell holds the parent: the
+// two together are the path, written once. A query still reaches either,
+// since fzf searches the line rather than the cell.
+func repoRows(dirs []string, live []Session) []row {
 	here := byDir(live)
 
 	rows := make([]row, len(dirs))
 	for i, dir := range dirs {
 		in := here[filepath.Clean(dir)]
-		r := row{dir: dir, several: len(in) > 1}
+		r := row{kind: kindRepo, dir: dir, several: len(in) > 1}
 		if len(in) == 1 {
 			r.session = in[0].Name
 		}
-		r.cells = []string{circles(in), label(dir)}
+		r.cells = []string{circles(in), repoMark + filepath.Base(dir), shorten(filepath.Dir(dir))}
 		rows[i] = r
 	}
 	return rows
 }
 
-// sessionRows returns one row per running session, or per session in dir
-// where dir is given.
-func sessionRows(live []Session, dir string) []row {
-	sorted := append([]Session(nil), live...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-
-	var rows []row
-	for _, s := range sorted {
-		if dir != "" && filepath.Clean(s.Dir) != filepath.Clean(dir) {
-			continue
-		}
-		rows = append(rows, row{
-			session: s.Name,
-			cells:   []string{circles([]Session{s}), s.Name, shorten(s.Dir)},
-		})
-	}
-	return rows
+// list is the whole picker: every session, then every repository.
+//
+// Sessions lead because the cursor starts on the row closest to where the
+// pane stands and the closest is decided by path length alone: with the
+// session first, a directory that has one answers with the session rather
+// than with the offer to start a second.
+func list(live []Session, repos []string) []row {
+	return append(sessionRows(live), repoRows(repos, live)...)
 }
 
-// lines renders rows for fzf: the index, what the preview reads, and what is
-// shown. Only the last is searched, and the index is what comes back.
+// lines renders rows for fzf: the index, the kind, what the preview reads,
+// and what is shown. Only the last is searched, and the index is what comes
+// back.
 func lines(rows []row) []string {
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
@@ -146,13 +143,33 @@ func lines(rows []row) []string {
 
 	out := make([]string, len(rows))
 	for i, r := range rows {
-		preview := r.dir
-		if preview == "" {
-			preview = r.session
+		target := r.session
+		if r.kind == kindRepo {
+			target = r.dir
 		}
-		out[i] = strconv.Itoa(i) + "\t" + preview + "\t" + display[i]
+		out[i] = strconv.Itoa(i) + "\t" + string(r.kind) + "\t" + target + "\t" + display[i]
 	}
 	return out
+}
+
+// narrow is the query that leaves only the sessions running in dir.
+//
+// A session row ends with the path it runs in and fzf's `$` anchors a term to
+// the end of the line, so the repository's own row and the worktrees below it
+// both fall out. Answering an ambiguity with a query rather than with a
+// second list is what keeps the picker one list.
+func narrow(dir string) string {
+	return shorten(dir) + "$"
+}
+
+// named returns the session name a typed query stands for, or "" where the
+// query names nothing.
+func named(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return ""
+	}
+	return sessionSafe(query)
 }
 
 // at returns the row whose directory holds dir most closely, or -1.
@@ -221,31 +238,50 @@ func previewLayout(cols, rows int) string {
 	}
 }
 
-// args returns the picker's arguments for one view.
+// preview branches on the kind, since one list holds both. It runs under
+// `sh -c` rather than the login shell, which need not be one that parses it.
+const preview = `if test {2} = session; then
+	zmx history {3}
+elif test {2} = repo; then
+	git -C {3} log --color=always --graph -50 --format='%C(auto)%h %as%d %s'
+fi`
+
+// follow puts a session's preview at the end of its scrollback and leaves a
+// repository's at the head of its history.
+const follow = `focus:transform:test {2} = session ` +
+	`&& echo 'change-preview-window(follow)' ` +
+	`|| echo 'change-preview-window(nofollow)'`
+
+// args returns the picker's arguments for a preview of the given layout, or
+// for no preview at all where the layout is empty.
 //
-// The query sits at the top, where the list grows away from it, and the only
-// keys the picker hands back are the ones the caller acts on.
-func args(m mode, prompt, header string, cursor int) []string {
+// The query sits at the top, where the list grows away from it. Enter clears
+// the marks rather than acting on them, so marking is for the keys that take
+// several rows and enter stays a thing done to one.
+func args(query string, cursor int, layout string) []string {
 	out := []string{
 		"--delimiter=\t",
-		"--with-nth=3..",
+		"--with-nth=4..",
 		"--height=100%",
 		"--layout=reverse",
-		"--no-sort",
-		"--prompt=" + prompt,
-		"--expect=" + strings.Join([]string{
-			keyMode, keyModeBack, keyNew, keyKill, keyKillHard, keyUp, keyFind,
-		}, ","),
+		"--multi",
+		"--tiebreak=index",
+		"--with-shell=sh -c",
+		"--print-query",
+		"--query=" + query,
+		"--prompt=zmx> ",
+		"--header=" + header,
+		"--bind=enter:clear-selection+accept",
+		"--expect=" + strings.Join([]string{keyNew, keyNamed, keyKill, keyKillHard}, ","),
 	}
 
-	preview := "lsd -la --color=always {2}"
-	if m == modeSessions {
-		preview = "zmx history {2}"
+	if layout != "" {
+		out = append(out,
+			"--preview="+preview,
+			"--preview-window="+layout,
+			"--bind="+follow,
+		)
 	}
-	if layout := previewLayout(termSize()); layout != "" {
-		out = append(out, "--preview="+preview, "--preview-window="+layout)
-	}
-	out = append(out, "--header="+header)
 
 	// The cursor starts where the pane stands, so a new pane is one keystroke
 	// from where it is. --sync is what makes it land: an action bound to
@@ -256,80 +292,98 @@ func args(m mode, prompt, header string, cursor int) []string {
 	return out
 }
 
-// view is where the walk of the lists has got to.
-type view struct {
-	mode   mode
-	dir    string // folders: the directory listed. sessions: the one filtered to.
-	search bool   // folders: listing everything below dir rather than its children
-}
-
-// navigate walks the lists until something is chosen or the picker is left,
+// navigate presents the list until something is chosen or the picker is left,
 // and returns the session to attach to and where to create it.
 func navigate(start string) (name, dir string, err error) {
-	v := opening(start)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	// The repositories are walked once and the walk outlives every turn: a
+	// kill changes what is running, which is read again, and not what is on
+	// disk.
+	repos := repositories(home)
+
+	query := ""
 	for {
 		live, err := sessions()
 		if err != nil {
 			return "", "", err
 		}
 
-		rows, prompt, header := list(v, live)
-		// fzf given nothing to show exits at once, which would take the
-		// picker with it: an empty list is a line saying so, and tab still
-		// leads out of it.
+		rows := list(live, repos)
+		// An empty list is a line saying so, which leaves the picker
+		// something to show and the query somewhere to sit.
 		if len(rows) == 0 {
-			rows = []row{{cells: []string{"", empty(v)}}}
+			rows = []row{{cells: []string{"", "nothing running, and no repositories below " + shorten(home)}}}
 		}
+		// The cursor is placed only on the turn that opens the picker: a
+		// query narrows the list, and a position counted against the whole of
+		// it would land somewhere else.
 		cursor := -1
-		if v.mode != modeSessions {
+		if query == "" {
 			cursor = at(rows, start)
 		}
 
-		key, index, err := present(lines(rows), args(v.mode, prompt, header, cursor))
-		if errors.Is(err, errCancelled) {
-			return "", "", errCancelled
-		}
+		answer, err := present(lines(rows), args(query, cursor, previewLayout(termSize())))
 		if err != nil {
 			return "", "", err
 		}
-		var chosen row
-		if index < len(rows) {
-			chosen = rows[index]
+		query = answer.query
+
+		var picked []row
+		for _, i := range answer.rows {
+			if i < len(rows) {
+				picked = append(picked, rows[i])
+			}
+		}
+		var first row
+		if len(picked) > 0 {
+			first = picked[0]
 		}
 
-		switch key {
-		case keyMode, keyModeBack:
-			v = view{mode: v.mode.next(key == keyMode), dir: v.dir}
-			if v.mode == modeFolders && v.dir == "" {
-				v.dir = filepath.Dir(start)
-			}
-			remember(start, v.mode)
-			continue
-
-		case keyUp:
-			if v.mode == modeFolders {
-				v = view{mode: modeFolders, dir: filepath.Dir(v.dir)}
+		switch answer.key {
+		case keyNamed:
+			// Named from the query, whatever the cursor stands on.
+			if name := named(query); name != "" {
+				return name, start, nil
 			}
 			continue
 
-		case keyFind:
-			if v.mode == modeFolders {
-				v.search = !v.search
+		case keyNew:
+			if first.dir == "" {
+				continue
 			}
-			continue
+			if first.kind == kindRepo && first.session == "" && !first.several {
+				return sessionName(first.dir), first.dir, nil
+			}
+			label, err := promptText("label> ", "another session in "+shorten(first.dir))
+			if errors.Is(err, errCancelled) {
+				continue
+			}
+			if err != nil {
+				return "", "", err
+			}
+			return sessionName(first.dir) + "+" + label, first.dir, nil
 
 		case keyKill, keyKillHard:
-			// A directory holding several is the same ambiguity enter meets,
+			// A repository holding several is the same ambiguity enter meets,
 			// and killing every one of them is not what one keystroke means.
-			if chosen.several {
-				v = view{mode: modeSessions, dir: chosen.dir}
+			if len(picked) == 1 && first.several {
+				query = narrow(first.dir)
 				continue
 			}
-			if chosen.session == "" {
+			var names []string
+			for _, r := range picked {
+				if r.session != "" {
+					names = append(names, r.session)
+				}
+			}
+			if len(names) == 0 {
 				continue
 			}
-			if key == keyKill {
-				ok, err := confirm("kill " + chosen.session + "?")
+			if answer.key == keyKill {
+				ok, err := confirm(question(names))
 				if err != nil && !errors.Is(err, errCancelled) {
 					return "", "", err
 				}
@@ -337,150 +391,95 @@ func navigate(start string) (name, dir string, err error) {
 					continue
 				}
 			}
-			if err := killSession(chosen.session); err != nil {
+			if err := killSessions(names); err != nil {
 				return "", "", err
 			}
 			continue
-
-		case keyNew:
-			if chosen.dir == "" {
-				continue
-			}
-			if chosen.session == "" && !chosen.several {
-				return sessionName(chosen.dir), chosen.dir, nil
-			}
-			label, err := promptText("label> ", "another session in "+shorten(chosen.dir))
-			if errors.Is(err, errCancelled) {
-				continue
-			}
-			if err != nil {
-				return "", "", err
-			}
-			return sessionName(chosen.dir) + "+" + label, chosen.dir, nil
 		}
 
-		// Enter. In the folders list it walks: a directory is a place to go
-		// into, and alt-enter is what opens a session there.
-		if v.mode == modeFolders {
-			if chosen.dir != "" {
-				v = view{mode: modeFolders, dir: chosen.dir}
+		// Enter.
+		if len(picked) == 0 {
+			// Nothing matched what was typed, so what was typed is the name
+			// of a session to start where the pane stands.
+			if name := named(query); name != "" {
+				return name, start, nil
 			}
 			continue
 		}
-		if chosen.several {
-			v = view{mode: modeSessions, dir: chosen.dir}
+		if first.several {
+			query = narrow(first.dir)
 			continue
 		}
-		if chosen.session != "" {
-			return chosen.session, "", nil
+		if first.session != "" {
+			return first.session, "", nil
 		}
-		if chosen.dir != "" {
-			return sessionName(chosen.dir), chosen.dir, nil
+		if first.dir != "" {
+			return sessionName(first.dir), first.dir, nil
 		}
 		// The line saying the list is empty stands for nothing to attach to.
 		continue
 	}
 }
 
-// empty is what a list with nothing in it says.
-func empty(v view) string {
-	switch v.mode {
-	case modeRepos:
-		return "no repositories below home"
-	case modeSessions:
-		if v.dir != "" {
-			return "no sessions in " + shorten(v.dir)
-		}
-		return "no sessions running"
-	}
-	return "no folders in " + shorten(v.dir)
-}
-
-// opening returns the view a pane standing in start opens on: the one it was
-// left on there, and otherwise the one that matches where it stands.
-func opening(start string) view {
-	if m, ok := rememberedView(start); ok {
-		if m == modeFolders {
-			return view{mode: modeFolders, dir: filepath.Dir(start)}
-		}
-		return view{mode: m}
-	}
-	if isRepo(start) {
-		return view{mode: modeRepos}
-	}
-	return view{mode: modeFolders, dir: filepath.Dir(start)}
-}
-
-// isRepo reports whether dir holds a `.git`, which a repository and a linked
-// worktree both do.
-func isRepo(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, ".git"))
-	return err == nil
-}
-
-// list renders the view: its rows, its prompt and what its keys do.
-func list(v view, live []Session) ([]row, string, string) {
-	switch v.mode {
-	case modeRepos:
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = "."
-		}
-		rows := dirRows(repositories(home), live, shorten)
-		return rows, "zmx repos> ", "⏎ attach or start   ⌥⏎ label   ⌦ kill   tab folders"
-
-	case modeSessions:
-		prompt := "zmx sessions> "
-		if v.dir != "" {
-			prompt = "zmx " + filepath.Base(v.dir) + "> "
-		}
-		return sessionRows(live, v.dir), prompt, "⏎ attach   ⌦ kill   tab folders"
-
-	default:
-		dirs, header := folders(v.dir), "⏎ enter   ⌥⏎ start here   ← up   ⌃f search   tab repos"
-		label := filepath.Base
-		if v.search {
-			dirs = under(v.dir)
-			header = "⏎ enter   ⌥⏎ start here   ⌃f children only   tab repos"
-			label = func(dir string) string {
-				rel, err := filepath.Rel(v.dir, dir)
-				if err != nil {
-					return dir
-				}
-				return rel
-			}
-		}
-		return dirRows(dirs, live, label), "zmx " + shorten(v.dir) + "> ", header
+// confirmArgs returns the arguments for the picker that asks q.
+func confirmArgs(q string) []string {
+	return []string{
+		"--delimiter=\t",
+		"--with-nth=3..",
+		"--height=100%",
+		"--layout=reverse",
+		"--no-sort",
+		"--no-info",
+		"--prompt=" + q + " ",
+		"--header=↑↓ choose   ⏎ confirm",
 	}
 }
 
 // confirm asks a yes or no question, answered with the same arrows as
 // everything else. The cursor starts on no, and escape is no.
-func confirm(question string) (bool, error) {
-	_, index, err := present(
-		[]string{"0\t\tno", "1\t\tyes"},
-		[]string{
-			"--delimiter=\t",
-			"--with-nth=3..",
-			"--height=100%",
-			"--layout=reverse",
-			"--no-sort",
-			"--no-info",
-			"--prompt=" + question + " ",
-			"--header=↑↓ choose   ⏎ confirm",
-		},
-	)
+func confirm(q string) (bool, error) {
+	index, err := pick([]string{"0\t\tno", "1\t\tyes"}, confirmArgs(q))
 	if err != nil {
 		return false, err
 	}
 	return index == 1, nil
 }
 
-// killSession ends a session and every client attached to it.
-func killSession(name string) error {
-	out, err := exec.Command("zmx", "kill", name).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("zmx kill %s: %s", name, strings.TrimSpace(string(out)))
+// question is what a kill asks before it happens.
+func question(names []string) string {
+	if len(names) == 1 {
+		return "kill " + names[0] + "?"
+	}
+	return "kill " + strconv.Itoa(len(names)) + " sessions?"
+}
+
+// killOrder puts the session this is running inside last.
+//
+// Killing it takes this process down with it, so anything ordered after it
+// would never be reached.
+func killOrder(names []string, current string) []string {
+	ordered := make([]string, 0, len(names))
+	found := false
+	for _, name := range names {
+		if current != "" && name == current {
+			found = true
+			continue
+		}
+		ordered = append(ordered, name)
+	}
+	if found {
+		ordered = append(ordered, current)
+	}
+	return ordered
+}
+
+// killSessions ends the named sessions and every client attached to them.
+func killSessions(names []string) error {
+	for _, name := range killOrder(names, os.Getenv("ZMX_SESSION")) {
+		out, err := exec.Command("zmx", "kill", name).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("zmx kill %s: %s", name, strings.TrimSpace(string(out)))
+		}
 	}
 	return nil
 }
