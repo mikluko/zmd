@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -419,11 +420,12 @@ func navigate(start string) (name, dir string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	// The repositories are walked once and the walk outlives every turn: a
-	// kill changes what is running, which is read again, and not what is on
-	// disk. What each checkout is comes off the same pass.
-	repos := repositories(home)
-	ident := identify(repos)
+	// The walk outlives every turn: a kill changes what is running, which is
+	// read again, and not what is on disk. The daemon holds it where one is
+	// listening, which is a quarter of a second this process then does not
+	// spend before drawing anything.
+	deck := dialDeck()
+	repos, ident := walked(context.Background(), deck, home)
 
 	// The ground floor is every session there is. Nothing above it is where
 	// the picker opens, the sessions being what a switch is between.

@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The session a pane last attached is recorded per pane, keyed by the pid of the shell whose loop runs the picker, which is the same process for as long as the pane is open. The picker opens with the cursor on it, escape leaves for it, and a pane that has held nothing falls through to the shared record. Records of panes that are gone are collected on the next write, nothing else running when a pane closes.
 - The preview sits beside the list or below it as the terminal's shape allows, or not at all where the list would be left unreadable. A session previews as its own scrollback, at the end of it; a place as `git log --graph`, which drops the dependency on `lsd`.
 
+### Added
+
+- `zmd daemon`, which holds the walk warm so a picker asks rather than walks: 290ms before a single row was drawn, against 3ms, on every detach. A picker that cannot reach it walks for itself, which is what keeps it an optimisation rather than a dependency and what lets it be restarted under a running picker. It talks ConnectRPC over a unix socket beside the rest of the state, or wherever `ZMD_DECK_DIR` says, an SSH `RemoteForward` being the case that needs to choose. It also re-reads what is running every second and notes when the answer moves, which is the half of a push channel that exists; telling an open picker is not wired up yet.
+
 ### Removed
 
 - `zmx-nav switch`, `zmx-nav pick` and `zmx-nav new`. There is one picker and it is what the command runs.

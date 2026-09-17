@@ -3,9 +3,11 @@ module github.com/mikluko/zmd
 go 1.27
 
 require (
+	connectrpc.com/connect v1.21.0
 	github.com/charlievieth/fastwalk v1.0.14
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/junegunn/fzf v0.74.4
+	google.golang.org/protobuf v1.36.12
 )
 
 require (

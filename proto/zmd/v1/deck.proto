@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package zmd.v1;
+
+option go_package = "github.com/mikluko/zmd/internal/zmd/v1;deckv1";
+
+// Deck is what a picker asks instead of doing the work itself.
+//
+// Walking the home directory costs a quarter of a second and every picker
+// paid it, on every detach. The daemon walks once and keeps it warm; a picker
+// that cannot reach the daemon walks for itself, so this is an optimisation
+// and never a dependency.
+service DeckService {
+  // Places returns every checkout the walk found.
+  rpc Places(PlacesRequest) returns (PlacesResponse) {}
+
+  // Watch streams an event whenever what a picker shows has changed, so an
+  // open picker is told rather than polling.
+  rpc Watch(WatchRequest) returns (stream WatchResponse) {}
+}
+
+message PlacesRequest {}
+
+message PlacesResponse {
+  repeated Place places = 1;
+}
+
+// Place is a directory holding a `.git`, which a worktree holds as much as a
+// repository does.
+message Place {
+  // Absolute path of the checkout.
+  string dir = 1;
+  // What git says it is, `owner/name` off its remote. Empty where the
+  // checkout has no remote to read one from.
+  string name = 2;
+}
+
+message WatchRequest {}
+
+message WatchResponse {
+  // What moved. A picker reloads on any of them.
+  Reason reason = 1;
+
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    // The walk found the set of checkouts changed.
+    REASON_PLACES = 1;
+    // A session appeared, ended, or changed hands.
+    REASON_SESSIONS = 2;
+  }
+}

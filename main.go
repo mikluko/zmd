@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ const usage = `zmd selects and starts zmx sessions.
 
 Usage:
   zmd            Pick a session or a repository, and attach
+  zmd daemon     Hold the walk warm and tell open pickers when it moves
   zmd version    Print the version
 
 The picker is a stack of rungs: the sessions running, the repositories one can
@@ -61,6 +63,11 @@ func main_(argv []string) error {
 		case "help", "--help", "-h":
 			fmt.Print(usage)
 			return nil
+		case "daemon":
+			// Optional, and the picker never waits on it: what it holds is
+			// what a picker would otherwise work out for itself, and a
+			// picker that cannot reach it does exactly that.
+			return serve(context.Background())
 		case "history":
 			// What the picker's preview runs on a session row. Not in the
 			// usage, being a part of the picker rather than a thing to reach

@@ -171,6 +171,23 @@ out entirely where what remained of the list would be unreadable. A session
 previews as its own scrollback through `zmx history`, at the end of it; a
 repository as its history through `git log --graph`.
 
+## The daemon
+
+```sh
+zmd daemon
+```
+
+Optional, and the picker never waits on it. It holds the walk warm and a
+picker asks instead of walking: 290ms before a single row was drawn, against
+3ms, on every detach.
+
+A picker that cannot reach it walks for itself, which is what keeps this an
+optimisation rather than a dependency and what lets the daemon be restarted
+under a running picker.
+
+The socket sits beside the rest of the state, or wherever `ZMD_DECK_DIR`
+says — an SSH `RemoteForward` being the case that needs to choose.
+
 ## Install
 
 ```sh
