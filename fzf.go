@@ -15,6 +15,10 @@ import (
 // errCancelled reports a picker the user dismissed. It is not a failure.
 var errCancelled = errors.New("cancelled")
 
+// errRetry reports a question answered no. The picker goes round again rather
+// than ending, the answer being about the keystroke and not about the picker.
+var errRetry = errors.New("retry")
+
 // keys the picker reports rather than acting on itself.
 //
 // Delete kills and backspace does not, because backspace is how a query is
@@ -23,15 +27,20 @@ var errCancelled = errors.New("cancelled")
 const (
 	keyEnter    = ""
 	keyNew      = "alt-enter"
-	keyNamed    = "ctrl-n"
+	keyRepos    = "ctrl-g"
 	keyKill     = "delete"
 	keyKillHard = "ctrl-delete"
 )
+
+// popRung is what left writes ahead of the rows, to say the stack moved
+// rather than a row being chosen.
+const popRung = "pop-rung"
 
 // choice is what one turn of the picker answered.
 type choice struct {
 	query string // what was typed, whether or not it matched anything
 	key   string // the key pressed, empty for enter
+	pop   bool   // left was pressed with nothing typed: go back a rung
 	rows  []int  // the marked rows, or the one under the cursor
 }
 
@@ -95,14 +104,21 @@ func present(lines []string, args []string) (choice, error) {
 	return parseChoice(written)
 }
 
-// parseChoice reads fzf's output: the query, then the key, then a line per
-// selected row.
+// parseChoice reads fzf's output: the query, then the key, then whatever a
+// `print` action queued, then a line per selected row.
+//
+// The marker is told from a row by having no index to lead with, which is
+// what every row carries.
 func parseChoice(written []string) (choice, error) {
 	if len(written) < 2 {
 		return choice{}, errCancelled
 	}
 	answer := choice{query: written[0], key: written[1]}
 	for _, line := range written[2:] {
+		if line == popRung {
+			answer.pop = true
+			continue
+		}
 		field, _, _ := strings.Cut(line, "\t")
 		index, err := strconv.Atoi(field)
 		if err != nil {
@@ -136,33 +152,6 @@ func pick(lines []string, args []string) (int, error) {
 		return 0, fmt.Errorf("unreadable selection %q", written[len(written)-1])
 	}
 	return index, nil
-}
-
-// promptText reads a line typed into an empty picker.
-//
-// Enter on a query matching nothing is how fzf reports typed text, so the
-// no-match exit is the answer here rather than a failure. Escape is not, and
-// neither is an empty line.
-func promptText(prompt, header string) (string, error) {
-	_, written, err := runFzf(nil, []string{
-		"--height=100%",
-		"--layout=reverse",
-		"--no-info",
-		"--print-query",
-		"--prompt=" + prompt,
-		"--header=" + header,
-	})
-	if err != nil {
-		return "", err
-	}
-	if len(written) == 0 {
-		return "", errCancelled
-	}
-	text := strings.TrimSpace(written[0])
-	if text == "" {
-		return "", errCancelled
-	}
-	return text, nil
 }
 
 // attach replaces this process with a zmx client attached to name.

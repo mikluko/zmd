@@ -9,27 +9,27 @@ import (
 // or an arrow, tab-separated key=value, a file URI carrying the host, and no
 // cmd= on a session started without one.
 const listFixture = "" +
-	"  name=mikluko.dotfiles\tpid=62474\tclients=1\tcreated=1789551651\tcwd=file://saraksh.local/Users/m/Forge/mikluko/dotfiles\tcmd=/bin/sh\n" +
-	"  name=freshone\tpid=63836\tclients=0\tcreated=1789551776\tcwd=file://saraksh.local/Users/m\n"
+	"  name=acme.dotfiles\tpid=62474\tclients=1\tcreated=1789551651\tcwd=file://host.local/Users/m/src/acme/dotfiles\tcmd=/bin/sh\n" +
+	"  name=freshone\tpid=63836\tclients=0\tcreated=1789551776\tcwd=file://host.local/Users/m\n"
 
 // The session the terminal is attached to, marked as `zmx list` marks it.
 const attachedFixture = "" +
-	"→ name=mikluko.here\tpid=1646\tclients=1\tcreated=1789626538\tcwd=file://saraksh.local/Users/m/here\n"
+	"→ name=acme.here\tpid=1646\tclients=1\tcreated=1789626538\tcwd=file://host.local/Users/m/here\n"
 
 func TestParseSessionsReadsFieldsByKey(t *testing.T) {
 	got := parseSessions(strings.NewReader(listFixture))
 	if len(got) != 2 {
 		t.Fatalf("got %d sessions, want 2", len(got))
 	}
-	// Sorted by name, so freshone leads.
-	if got[0].Name != "freshone" || got[1].Name != "mikluko.dotfiles" {
+	// Sorted by name, so acme.dotfiles leads.
+	if got[0].Name != "acme.dotfiles" || got[1].Name != "freshone" {
 		t.Errorf("names %q, %q", got[0].Name, got[1].Name)
 	}
-	if got[1].Clients != "1" || got[1].PID != "62474" {
-		t.Errorf("clients %q pid %q", got[1].Clients, got[1].PID)
+	if got[0].Clients != "1" || got[0].PID != "62474" {
+		t.Errorf("clients %q pid %q", got[0].Clients, got[0].PID)
 	}
-	if got[1].Dir != "/Users/m/Forge/mikluko/dotfiles" {
-		t.Errorf("dir %q", got[1].Dir)
+	if got[0].Dir != "/Users/m/src/acme/dotfiles" {
+		t.Errorf("dir %q", got[0].Dir)
 	}
 }
 
@@ -42,7 +42,7 @@ func TestParseSessionsReadsTheAttachedSession(t *testing.T) {
 	}
 	var here Session
 	for _, s := range got {
-		if s.Name == "mikluko.here" {
+		if s.Name == "acme.here" {
 			here = s
 		}
 	}
@@ -52,14 +52,23 @@ func TestParseSessionsReadsTheAttachedSession(t *testing.T) {
 	if here.Clients != "1" || here.Dir != "/Users/m/here" {
 		t.Errorf("read %+v", here)
 	}
+	// The marker is also the answer to whose client that is.
+	if !here.Here || here.heldElsewhere() {
+		t.Errorf("the marked session read as held elsewhere: %+v", here)
+	}
+	for _, s := range got {
+		if s.Name != "acme.here" && s.Here {
+			t.Errorf("%s was marked as this terminal's", s.Name)
+		}
+	}
 }
 
 // A record without cmd= must not shift the columns: this is what breaks a
 // reader that takes fields by position.
 func TestParseSessionsToleratesMissingCmd(t *testing.T) {
 	got := parseSessions(strings.NewReader(listFixture))
-	if got[0].Dir != "/Users/m" {
-		t.Errorf("dir %q, want /Users/m", got[0].Dir)
+	if got[1].Dir != "/Users/m" {
+		t.Errorf("dir %q, want /Users/m", got[1].Dir)
 	}
 }
 
@@ -72,8 +81,8 @@ func TestParseSessionsIgnoresBlankAndNamelessLines(t *testing.T) {
 
 func TestParseCwd(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"file://saraksh.local/Users/m/Forge", "/Users/m/Forge"},
-		{"file:///Users/m/Forge", "/Users/m/Forge"},
+		{"file://host.local/Users/m/src", "/Users/m/src"},
+		{"file:///Users/m/src", "/Users/m/src"},
 		{"file://host/Users/m/two%20words", "/Users/m/two words"},
 		{"/Users/m/plain", "/Users/m/plain"},
 		{"", ""},
@@ -84,13 +93,23 @@ func TestParseCwd(t *testing.T) {
 	}
 }
 
-// A slash makes the session's socket path a directory that is not there, so
-// zmx creates nothing and reports nothing. Names must not carry one.
-func TestSessionSafeRemovesSeparators(t *testing.T) {
-	if got := sessionSafe("uptime-com/up2-monitoring"); got != "uptime-com.up2-monitoring" {
-		t.Errorf("got %q", got)
-	}
-	if got := sessionSafe("mikluko/octant@918-arrival"); strings.Contains(got, "/") {
-		t.Errorf("got %q, still carries a separator", got)
+// The marker `zmx list` writes is the only thing that tells a session this
+// terminal holds from one another terminal holds, and both report a client.
+func TestHeldElsewhereCountsPastThisTerminal(t *testing.T) {
+	for _, c := range []struct {
+		what    string
+		session Session
+		want    bool
+	}{
+		{"nobody attached", Session{Clients: "0"}, false},
+		{"this terminal", Session{Clients: "1", Here: true}, false},
+		{"another terminal", Session{Clients: "1"}, true},
+		{"this one and another", Session{Clients: "2", Here: true}, true},
+		{"two others", Session{Clients: "2"}, true},
+		{"a count that does not read", Session{Clients: "?"}, false},
+	} {
+		if got := c.session.heldElsewhere(); got != c.want {
+			t.Errorf("%s: heldElsewhere = %v, want %v", c.what, got, c.want)
+		}
 	}
 }

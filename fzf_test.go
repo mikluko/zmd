@@ -31,6 +31,21 @@ func TestParseChoiceKeepsAQueryThatMatchedNothing(t *testing.T) {
 	}
 }
 
+// Left accepts, so the marker it queues arrives between the key and the row
+// the cursor was left on.
+func TestParseChoiceReadsThePopMarkerAheadOfTheRows(t *testing.T) {
+	got, err := parseChoice([]string{"", "", popRung, "1\ts\t/b\t b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.pop {
+		t.Error("the pop marker was not read")
+	}
+	if len(got.rows) != 1 || got.rows[0] != 1 {
+		t.Errorf("rows %v, want the row under the cursor", got.rows)
+	}
+}
+
 func TestParseChoiceOnNothingWrittenIsCancelled(t *testing.T) {
 	if _, err := parseChoice(nil); !errors.Is(err, errCancelled) {
 		t.Errorf("empty output gave %v, want cancelled", err)

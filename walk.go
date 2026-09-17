@@ -31,6 +31,63 @@ var skipped = map[string]bool{
 	"venv":         true,
 }
 
+// under reports whether path is base or stands below it.
+func under(base, path string) bool {
+	if base == "" || path == "" {
+		return false
+	}
+	base, path = filepath.Clean(base), filepath.Clean(path)
+	return path == base || strings.HasPrefix(path, base+string(filepath.Separator))
+}
+
+// repoRoot returns the repository dir belongs to, or "" where it belongs to
+// none.
+//
+// A linked worktree and the repository it was cut from answer with the same
+// path, which is what lets a scope standing in one reach the other: git
+// records the repository in the `.git` file it writes in the worktree, where
+// a repository has a `.git` directory instead.
+func repoRoot(dir string) string {
+	at := filepath.Clean(dir)
+	for {
+		marker := filepath.Join(at, ".git")
+		if info, err := os.Stat(marker); err == nil {
+			if info.IsDir() {
+				return at
+			}
+			return gitdirOwner(marker)
+		}
+		parent := filepath.Dir(at)
+		if parent == at {
+			return ""
+		}
+		at = parent
+	}
+}
+
+// gitdirOwner reads the repository out of a linked worktree's `.git` file,
+// which git writes as `gitdir: <repo>/.git/worktrees/<id>`.
+//
+// A form that does not carry a worktree record belongs to no repository this
+// can name: a submodule's `gitdir:` points into `.git/modules` instead.
+func gitdirOwner(marker string) string {
+	body, err := os.ReadFile(marker)
+	if err != nil {
+		return ""
+	}
+	path, ok := strings.CutPrefix(strings.TrimSpace(string(body)), "gitdir:")
+	if !ok {
+		return ""
+	}
+	sep := string(filepath.Separator)
+	record := sep + ".git" + sep + "worktrees" + sep
+	i := strings.Index(strings.TrimSpace(path), record)
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSpace(path)[:i]
+}
+
 // repositories returns every directory below root holding a `.git`, which is
 // a repository and a linked worktree alike: git records a worktree with a
 // `.git` file where a repository has a directory, and both are places to work.

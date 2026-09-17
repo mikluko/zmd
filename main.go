@@ -1,9 +1,10 @@
-// Command zmx-deck selects and starts zmx sessions.
+// Command zmd selects and starts zmx sessions.
 //
 // zmx persists terminal sessions and deliberately provides no windows, tabs
 // or splits. What it also provides no opinion about is which session you
-// want, which is the gap this fills: one list holding the sessions there are
-// and the repositories a session can be started in, narrowed by typing.
+// want, which is the gap this fills: one list of places, being the directories
+// a session can be started in and the directories sessions are already running
+// in, narrowed by typing.
 package main
 
 import (
@@ -15,24 +16,30 @@ import (
 // version is stamped by the release build; `devel` means built from source.
 var version = "devel"
 
-const usage = `zmx-deck selects and starts zmx sessions.
+const usage = `zmd selects and starts zmx sessions.
 
 Usage:
-  zmx-deck            Pick a session or a repository, and attach
-  zmx-deck version    Print the version
+  zmd            Pick a session or a repository, and attach
+  zmd version    Print the version
 
-The picker holds one list: the sessions there are, then the repositories a
-session can be started in. Typing narrows both at once.
+The picker is a stack of rungs: the sessions running, the repositories one can
+be started in, and a repository's checkouts. Right pushes, left pops, and
+enter is right's alias. It opens on the sessions, with the cursor on the one
+this pane last held.
 
 In the picker:
-  enter          attach the session, or start one in the repository; where
-                 what was typed matches nothing, start a session under that
-                 name here
-  alt-enter      start another session where the cursor stands, under a label
-                 you type
-  ctrl-n         start a session named after what you typed, matched or not
+  enter, right   descend: attach the session, list a repository's worktrees,
+                 or enter a checkout and start a session where it has none.
+                 A session another terminal has open is taken, after asking
+  left           back a rung; backspace does the same. With a query typed
+                 these correct it instead
+  ctrl-g         from the sessions, the repositories
+  alt-enter      start another session where the cursor stands, whatever is
+                 already running there
   tab            mark, for a kill that takes several at once
-  delete         kill, after asking; ctrl-delete without asking
+  delete         kill what the marked rows stand for, after asking;
+                 ctrl-delete without asking
+  esc            leave for the session this pane last held
 `
 
 func main() {
@@ -40,7 +47,7 @@ func main() {
 		if errors.Is(err, errCancelled) {
 			os.Exit(130)
 		}
-		fmt.Fprintln(os.Stderr, "zmx-deck: "+err.Error())
+		fmt.Fprintln(os.Stderr, "zmd: "+err.Error())
 		os.Exit(1)
 	}
 }
@@ -54,6 +61,15 @@ func main_(argv []string) error {
 		case "help", "--help", "-h":
 			fmt.Print(usage)
 			return nil
+		case "history":
+			// What the picker's preview runs on a session row. Not in the
+			// usage, being a part of the picker rather than a thing to reach
+			// for: it is `zmx history` with what only a terminal should read
+			// taken out.
+			if len(argv) != 2 {
+				return fmt.Errorf("history takes one session name")
+			}
+			return history(argv[1], os.Stdout)
 		default:
 			fmt.Fprint(os.Stderr, usage)
 			return fmt.Errorf("unknown argument %q", argv[0])

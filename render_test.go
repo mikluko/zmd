@@ -3,11 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strconv"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/go-git/go-git/v5/config"
 	fzf "github.com/junegunn/fzf/src"
 )
 
@@ -16,18 +18,18 @@ import (
 func scene(t *testing.T) (root string, found []Session) {
 	t.Helper()
 	root = t.TempDir()
-	repo := repoAt(t, filepath.Join(root, "Forge", "mikluko", "octant"))
-	tree := worktreeAt(t, repo, "octant-918-arrival",
-		filepath.Join(root, "Forge", "mikluko", "octant", ".claude", "worktrees", "octant-918-arrival"))
-	other := repoAt(t, filepath.Join(root, "Forge", "uptime-com", "api"))
+	repo := repoAt(t, filepath.Join(root, "src", "acme", "engine"))
+	tree := worktreeAt(t, repo, "engine-918",
+		filepath.Join(root, "src", "acme", "engine", ".claude", "worktrees", "engine-918"))
+	other := repoAt(t, filepath.Join(root, "src", "acme", "api"))
 	plain := filepath.Join(root, "Documents", "notes")
 	if err := os.MkdirAll(plain, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	return root, []Session{
-		{Name: "Forge.mikluko.octant", Clients: "1", Dir: repo},
-		{Name: "Forge.mikluko.octant+review", Clients: "0", Dir: repo},
+		{Name: "src.acme.engine", Clients: "1", Dir: repo},
+		{Name: "src.acme.engine+review", Clients: "0", Dir: repo},
 		{Name: "supa-7f3a", Clients: "2", Dir: other},
 		{Name: "Documents.notes", Clients: "0", Dir: plain},
 		{Name: "loose", Clients: "0", Dir: t.TempDir()},
@@ -35,221 +37,142 @@ func scene(t *testing.T) (root string, found []Session) {
 	}
 }
 
-// find returns the row of the given kind standing for dir.
-func find(t *testing.T, rows []row, k kind, dir string) row {
+// find returns the row standing for dir.
+func find(t *testing.T, rows []row, dir string) row {
 	t.Helper()
 	for _, r := range rows {
-		if r.kind == k && filepath.Clean(r.dir) == filepath.Clean(dir) {
+		if filepath.Clean(r.dir) == filepath.Clean(dir) {
 			return r
 		}
 	}
-	t.Fatalf("no %s row for %q", k, dir)
+	t.Fatalf("no row for %q", dir)
 	return row{}
 }
 
-func TestCirclesFillWithAClient(t *testing.T) {
-	got := circles([]Session{
-		{Name: "a", Clients: "1"},
-		{Name: "b", Clients: "0"},
-		{Name: "c", Clients: ""},
-	})
-	if got != attached+detached+detached {
-		t.Errorf("rendered %q, want one filled and two hollow", got)
-	}
-	if circles(nil) != "" {
-		t.Errorf("a directory with no sessions rendered %q", circles(nil))
-	}
-}
-
-// The marker counts sessions by the directory they run in, so a session this
-// tool never named still counts against the directory it sits in.
-func TestRepoRowsCountSessionsByDirectory(t *testing.T) {
-	root, live := scene(t)
-	repo := filepath.Join(root, "Forge", "mikluko", "octant")
-	api := filepath.Join(root, "Forge", "uptime-com", "api")
-	empty := filepath.Join(root, "Documents")
-
-	rows := repoRows([]string{repo, api, empty}, live)
-
-	if got := find(t, rows, kindRepo, repo); got.cells[0] != attached+detached {
-		t.Errorf("two sessions rendered %q", got.cells[0])
-	} else if !got.several || got.session != "" {
-		t.Errorf("two sessions named %q to attach, want the ambiguity kept", got.session)
-	}
-	if got := find(t, rows, kindRepo, api); got.session != "supa-7f3a" || got.cells[0] != attached {
-		t.Errorf("a session named elsewhere rendered %q / %q", got.cells[0], got.session)
-	}
-	if got := find(t, rows, kindRepo, empty); got.cells[0] != "" || got.session != "" {
-		t.Errorf("a directory with nothing in it rendered %q / %q", got.cells[0], got.session)
-	}
-}
-
-// The name cell is the basename and the path cell is the parent, so a
-// repository is not written twice on its own line.
-func TestRepoRowsSplitTheNameFromTheParent(t *testing.T) {
-	root, live := scene(t)
-	repo := filepath.Join(root, "Forge", "mikluko", "octant")
-
-	got := find(t, repoRows([]string{repo}, live), kindRepo, repo)
-	if got.cells[1] != repoMark+"octant" {
-		t.Errorf("named %q, want the basename marked as a repository", got.cells[1])
-	}
-	if got.cells[2] != shorten(filepath.Dir(repo)) {
-		t.Errorf("placed at %q, want the parent %q", got.cells[2], shorten(filepath.Dir(repo)))
-	}
-}
-
-func TestSessionRowsListEveryRunningSession(t *testing.T) {
-	_, live := scene(t)
-	rows := sessionRows(live)
-
-	if len(rows) != len(live) {
-		t.Fatalf("listed %d of %d sessions", len(rows), len(live))
-	}
-	for i, r := range rows {
-		if r.kind != kindSession || r.session == "" || r.dir == "" {
-			t.Errorf("row %d is %v / %q / %q", i, r.kind, r.session, r.dir)
-		}
-		if i > 0 && rows[i-1].session > r.session {
-			t.Errorf("row %d (%q) follows %q, which is out of name order", i, r.session, rows[i-1].session)
-		}
-	}
-}
-
-// Sessions lead so the cursor, which takes the closest directory, answers a
-// directory that has one with the session rather than with the repository.
-func TestListLeadsWithSessions(t *testing.T) {
-	root, live := scene(t)
-	repo := filepath.Join(root, "Forge", "mikluko", "octant")
-	rows := list(live, repositories(root))
-
-	for i, r := range rows[:len(live)] {
-		if r.kind != kindSession {
-			t.Fatalf("row %d is a %v, want the sessions first", i, r.kind)
-		}
-	}
-	got := at(rows, repo)
-	if got < 0 || rows[got].kind != kindSession {
-		t.Errorf("the cursor landed on row %d, want a session in the repository", got)
-	}
-}
-
-// The cursor starts where the pane stands, and the closest directory wins, so
-// a worktree answers with itself rather than with the repository above it.
-func TestAtTakesTheClosestDirectory(t *testing.T) {
-	root, live := scene(t)
-	repo := filepath.Join(root, "Forge", "mikluko", "octant")
-	tree := filepath.Join(repo, ".claude", "worktrees", "octant-918-arrival")
-	rows := repoRows([]string{repo, tree}, live)
-
-	if got := at(rows, repo); got < 0 || rows[got].dir != repo {
-		t.Errorf("the repository selected row %d", got)
-	}
-	if got := at(rows, filepath.Join(repo, "internal", "deep")); got < 0 || rows[got].dir != repo {
-		t.Errorf("a subdirectory selected row %d, want the repository", got)
-	}
-	if got := at(rows, tree); got < 0 || rows[got].dir != tree {
-		t.Errorf("the worktree selected row %d, want the worktree", got)
-	}
-	if got := at(rows, os.TempDir()); got != -1 {
-		t.Errorf("a directory under no row selected row %d, want none", got)
-	}
-}
-
-// fzf is told to search and show the display only, so the index it hands back
-// leads every line, and the kind and the preview's argument follow it.
-func TestLinesCarryTheIndexTheKindAndTheTarget(t *testing.T) {
-	root, live := scene(t)
-	rows := list(live, repositories(root))
-
-	for i, line := range lines(rows) {
-		parts := strings.SplitN(line, "\t", 4)
-		if len(parts) != 4 {
-			t.Fatalf("line %d has %d fields, want 4: %q", i, len(parts), line)
-		}
-		if parts[0] != strconv.Itoa(i) {
-			t.Errorf("line %d leads with %q", i, parts[0])
-		}
-		if parts[1] != string(rows[i].kind) {
-			t.Errorf("line %d is a %q, want %q", i, parts[1], rows[i].kind)
-		}
-		want := rows[i].session
-		if rows[i].kind == kindRepo {
-			want = rows[i].dir
-		}
-		if parts[2] != want {
-			t.Errorf("line %d previews %q, want %q", i, parts[2], want)
-		}
-	}
-}
-
-// narrow answers a directory holding several sessions with a query rather
-// than with a second list, which holds only because a session's line ends
-// with the path it runs in: fzf anchors a `$` term to the end of the line.
-func TestNarrowReachesTheSessionsInTheDirectoryAndNothingElse(t *testing.T) {
-	root, live := scene(t)
-	repo := filepath.Join(root, "Forge", "mikluko", "octant")
-	anchored := strings.TrimSuffix(narrow(repo), "$")
-
-	var matched []string
-	for _, line := range lines(list(live, repositories(root))) {
-		display := strings.SplitN(line, "\t", 4)[3]
-		if strings.HasSuffix(display, anchored) {
-			matched = append(matched, display)
-		}
-	}
-
-	if len(matched) != 2 {
-		t.Fatalf("the anchor matched %d lines, want the repository's 2 sessions:\n%s",
-			len(matched), strings.Join(matched, "\n"))
-	}
-	for _, line := range matched {
-		if !strings.Contains(line, "Forge.mikluko.octant") {
-			t.Errorf("matched %q, which is not a session in the repository", line)
-		}
-	}
-}
-
-// A name has to carry the path, since two directories sharing a basename
-// would otherwise share the one session zmx keys by that name.
-func TestSessionNameIsThePathDotted(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home directory")
-	}
-	for _, c := range []struct{ dir, want string }{
-		{filepath.Join(home, "Forge", "mikluko", "notes"), "Forge.mikluko.notes"},
-		{filepath.Join(home, "archive", "notes"), "archive.notes"},
-		{filepath.Join(home, "notes"), "notes"},
-		{home, "home"},
-		{"/etc/nginx", "etc.nginx"},
+// One cell, whatever stands in the directory: filled where a client is
+// attached, ringed where there is more than one session.
+func TestCircleSaysAttachedAndPlural(t *testing.T) {
+	one, none, some := Session{Clients: "1"}, Session{Clients: "0"}, Session{Clients: ""}
+	for _, c := range []struct {
+		what  string
+		found []Session
+		want  string
+	}{
+		{"nothing there", nil, " "},
+		{"one, no client", []Session{none}, detached},
+		{"one, a client", []Session{one}, attached},
+		{"one, no count at all", []Session{some}, detached},
+		{"two, no client", []Session{none, none}, severalO},
+		{"two, one attached", []Session{none, one}, several},
+		{"three, one attached", []Session{none, one, none}, several},
 	} {
-		if got := sessionName(c.dir); got != c.want {
-			t.Errorf("%s named %q, want %q", c.dir, got, c.want)
+		if got := circle(c.found); got != c.want {
+			t.Errorf("%s: rendered %q, want %q", c.what, got, c.want)
 		}
 	}
 }
 
-func TestSessionNamesCarryNoSeparator(t *testing.T) {
-	for _, dir := range []string{"/etc/nginx", "/var/log/a/b", "/"} {
-		if strings.Contains(sessionName(dir), "/") {
-			t.Errorf("%s named %q, which zmx cannot hold", dir, sessionName(dir))
-		}
+// Three cells wide whatever it says, or every name below it steps sideways.
+// Escapes are not cells, so the count is of what the terminal draws.
+func TestStatusIsAlwaysThreeCells(t *testing.T) {
+	root := t.TempDir()
+	repo := repoAt(t, filepath.Join(root, "engine"))
+	tree := worktreeAt(t, repo, "engine-918", filepath.Join(root, "elsewhere", "engine-918"))
+	plain := filepath.Join(root, "notes")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
 	}
-}
 
-// A query that matched nothing is the name of a session to start, and a query
-// of nothing but whitespace is not a name.
-func TestNamedTurnsAQueryIntoASessionName(t *testing.T) {
-	for _, c := range []struct{ in, want string }{
-		{"scratch", "scratch"},
-		{"  scratch  ", "scratch"},
-		{"mikluko/octant", "mikluko.octant"},
-		{"   ", ""},
-		{"", ""},
+	for _, c := range []struct{ what, dir string }{
+		{"a repository", repo},
+		{"a worktree", tree},
+		{"neither", plain},
 	} {
-		if got := named(c.in); got != c.want {
-			t.Errorf("named(%q) = %q, want %q", c.in, got, c.want)
+		for _, found := range [][]Session{nil, {{Clients: "1"}}, {{Clients: "0"}, {Clients: "1"}}} {
+			got := status(c.dir, found)
+			if n := utf8.RuneCountInString(visible(got)); n != statusWidth {
+				t.Errorf("%s with %d sessions: %q is %d cells, want %d",
+					c.what, len(found), got, n, statusWidth)
+			}
+		}
+	}
+
+	// Bright is the repository and dim is the worktree cut from it, which is
+	// the whole of what tells them apart.
+	if strings.Contains(status(repo, nil), dim) {
+		t.Error("a repository was dimmed")
+	}
+	if !strings.Contains(status(tree, nil), dim) {
+		t.Error("a worktree was not dimmed")
+	}
+	if strings.Contains(status(plain, nil), checkout) {
+		t.Error("a directory git knows nothing about was marked as a checkout")
+	}
+}
+
+// visible strips the SGR sequences, leaving what occupies a cell.
+func visible(s string) string {
+	for {
+		i := strings.Index(s, "\x1b[")
+		if i < 0 {
+			return s
+		}
+		j := strings.IndexByte(s[i:], 'm')
+		if j < 0 {
+			return s
+		}
+		s = s[:i] + s[i+j+1:]
+	}
+}
+
+// has reports whether any row stands in dir.
+func has(rows []row, dir string) bool {
+	for _, r := range rows {
+		if r.dir != "" && filepath.Clean(r.dir) == filepath.Clean(dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// A prefix is not a path: `/a/bc` starts with `/a/b` and stands nowhere
+// below it.
+func TestUnderIsAPathAndNotAPrefix(t *testing.T) {
+	for _, c := range []struct {
+		base, path string
+		want       bool
+	}{
+		{"/a/b", "/a/b", true},
+		{"/a/b", "/a/b/c", true},
+		{"/a/b", "/a/bc", false},
+		{"/a/b", "/a", false},
+		{"", "/a", false},
+	} {
+		if got := under(c.base, c.path); got != c.want {
+			t.Errorf("under(%q, %q) = %v, want %v", c.base, c.path, got, c.want)
+		}
+	}
+}
+
+// A worktree and the repository it was cut from answer with the same root,
+// which is what lets a scope standing in one reach the other.
+func TestRepoRootAnswersWithTheRepositoryAWorktreeWasCutFrom(t *testing.T) {
+	root := t.TempDir()
+	repo := repoAt(t, filepath.Join(root, "engine"))
+	tree := worktreeAt(t, repo, "engine-918", filepath.Join(root, "elsewhere", "engine-918"))
+	plain := filepath.Join(root, "notes")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct{ what, dir, want string }{
+		{"a repository", repo, repo},
+		{"a directory inside one", filepath.Join(repo, "internal"), repo},
+		{"a worktree", tree, repo},
+		{"a directory that is neither", plain, ""},
+	} {
+		if got := repoRoot(c.dir); got != c.want {
+			t.Errorf("%s: repoRoot = %q, want %q", c.what, got, c.want)
 		}
 	}
 }
@@ -284,10 +207,12 @@ func TestRepositoriesFindsReposAndWorktrees(t *testing.T) {
 	root, _ := scene(t)
 	found := repositories(root)
 
+	// Sorted, so acme leads acme and a worktree follows the repository
+	// it sits under.
 	want := []string{
-		filepath.Join(root, "Forge", "mikluko", "octant"),
-		filepath.Join(root, "Forge", "mikluko", "octant", ".claude", "worktrees", "octant-918-arrival"),
-		filepath.Join(root, "Forge", "uptime-com", "api"),
+		filepath.Join(root, "src", "acme", "api"),
+		filepath.Join(root, "src", "acme", "engine"),
+		filepath.Join(root, "src", "acme", "engine", ".claude", "worktrees", "engine-918"),
 	}
 	if strings.Join(found, "\n") != strings.Join(want, "\n") {
 		t.Errorf("found:\n%s\nwant:\n%s", strings.Join(found, "\n"), strings.Join(want, "\n"))
@@ -330,9 +255,10 @@ func TestThePickerArgumentsParse(t *testing.T) {
 		what string
 		args []string
 	}{
-		{"opening on a row, beside a preview", args("", 12, previewLayout(200, 50))},
-		{"opening on a row, below one", args("", 12, previewLayout(100, 40))},
-		{"reopened under a query, with no preview", args(narrow("/tmp/x"), -1, "")},
+		{"the sessions rung", args(rung{}, "", "  ⌃g repos  ⎋ leave", 2, previewLayout(200, 50))},
+		{"the repositories rung", args(rung{view: viewRepos}, "", "  ← back", -1, previewLayout(100, 40))},
+		{"a checkout's rung, under a query", args(rung{view: viewCheckouts, name: "acme/api"}, "engine", "  ← back", -1, "")},
+
 		{"a question", confirmArgs("kill one?")},
 	} {
 		if _, err := fzf.ParseOptions(true, c.args); err != nil {
@@ -359,4 +285,250 @@ func TestAlignPadsToTheWidestCell(t *testing.T) {
 // column returns how many columns into line the given cell starts.
 func column(line, cell string) int {
 	return utf8.RuneCountInString(line[:strings.Index(line, cell)])
+}
+
+// A place is its directory under whatever contains it, and a worktree is
+// contained by the repository it was cut from rather than by `worktrees`.
+func TestPlaceNameIsTheThingUnderItsContainer(t *testing.T) {
+	root := t.TempDir()
+	repo := repoAt(t, filepath.Join(root, "gateway"))
+	tree := worktreeAt(t, repo, "fix-retry",
+		filepath.Join(repo, ".claude", "worktrees", "fix-retry"))
+
+	if got, want := placeName(repo, nil), filepath.Base(root)+"/gateway"; got != want {
+		t.Errorf("a repository named %q, want %q", got, want)
+	}
+	if got, want := placeName(tree, nil), "gateway/fix-retry"; got != want {
+		t.Errorf("a worktree named %q, want %q", got, want)
+	}
+	if got := placeName("/etc/nginx", nil); got != "etc/nginx" {
+		t.Errorf("a directory outside home named %q", got)
+	}
+	if got := placeName("/", nil); got != "/" {
+		t.Errorf("the root named %q", got)
+	}
+}
+
+// A name is a handle. It has to be typeable, unique among what is running,
+// and free of the separator zmx cannot hold in a socket name.
+func TestSessionNameIsAFreeHandle(t *testing.T) {
+	var live []Session
+	seen := map[string]bool{}
+	for range 200 {
+		name := sessionName(live)
+		if seen[name] {
+			t.Fatalf("%q was handed out twice", name)
+		}
+		if strings.ContainsAny(name, "/ \t") {
+			t.Fatalf("%q carries what zmx cannot hold in a name", name)
+		}
+		seen[name] = true
+		live = append(live, Session{Name: name})
+	}
+}
+
+// The label says what a session is for and the name says nothing, so the name
+// is the fallback rather than the answer.
+func TestSessionLabelPrefersWhatTheLabelsSay(t *testing.T) {
+	if got := sessionLabel(Session{Name: "harbor-41", Title: "retry-bug"}); got != "retry-bug" {
+		t.Errorf("a labelled session read as %q", got)
+	}
+	if got := sessionLabel(Session{Name: "harbor-41"}); got != "harbor-41" {
+		t.Errorf("an unlabelled session read as %q, want its name", got)
+	}
+}
+
+// A checkout goes by what git says it is. The path is where it happens to
+// sit: a directory called `uptime-com` can hold `acme/workspace`.
+func TestPlaceNameReadsTheRepositoryRatherThanThePath(t *testing.T) {
+	root := t.TempDir()
+	repo := repoAt(t, filepath.Join(root, "some-directory"))
+	tree := worktreeAt(t, repo, "w",
+		filepath.Join(repo, ".claude", "worktrees", "api-rebase-517"))
+	ident := map[string]string{repo: "acme/api"}
+
+	if got := placeName(repo, ident); got != "acme/api" {
+		t.Errorf("a checkout named %q, want what its remote says", got)
+	}
+	if got := placeName(tree, ident); got != "acme/api/rebase-517" {
+		t.Errorf("a worktree named %q", got)
+	}
+	// Nothing known about it: the path is all there is to go on.
+	if got, want := placeName(repo, nil), filepath.Base(root)+"/some-directory"; got != want {
+		t.Errorf("a checkout with no remote named %q, want %q", got, want)
+	}
+}
+
+// A worktree's basename carries its repository's name as a prefix, which is
+// how the tools that cut them name them, and repeating it says nothing.
+func TestTrimRepoTakesThePrefixOffAWorktree(t *testing.T) {
+	for _, c := range []struct{ base, ident, want string }{
+		{"api-rebase-517", "acme/api", "rebase-517"},
+		{"api-rebase-517", "api", "rebase-517"},
+		{"something-else", "acme/api", "something-else"},
+		{"api-", "acme/api", "api-"},
+		{"api", "acme/api", "api"},
+	} {
+		if got := trimRepo(c.base, c.ident); got != c.want {
+			t.Errorf("trimRepo(%q, %q) = %q, want %q", c.base, c.ident, got, c.want)
+		}
+	}
+}
+
+// Both forms git writes carry the same two trailing segments.
+func TestOwnerNameReadsBothRemoteForms(t *testing.T) {
+	for _, c := range []struct{ url, want string }{
+		{"https://github.com/acme/api.git", "acme/api"},
+		{"git@github.com:acme/api.git", "acme/api"},
+		{"git@github.com:acme/api", "acme/api"},
+		{"https://gitlab.com/group/sub/api.git", "sub/api"},
+		{"/srv/mirrors/api.git", "mirrors/api"},
+		{"api.git", ""},
+		{"", ""},
+	} {
+		got := ownerName(&config.RemoteConfig{URLs: []string{c.url}})
+		if got != c.want {
+			t.Errorf("ownerName(%q) = %q, want %q", c.url, got, c.want)
+		}
+	}
+	if got := ownerName(&config.RemoteConfig{}); got != "" {
+		t.Errorf("a remote with no URL gave %q", got)
+	}
+}
+
+// Enter does something on every row, so it is advertised on every row. A key
+// that would do nothing is not: nothing to kill where nothing is running, and
+// no take where nobody else holds it.
+func TestHintsOfferOnlyWhatTheKeyWouldDo(t *testing.T) {
+	for _, c := range []struct {
+		state    string
+		want     []string
+		wantNone []string
+	}{
+		{"r", []string{"⏎ start", "⌥⏎ new"}, []string{"⌦ kill", "take", "⇥ mark"}},
+		{"s", []string{"⏎ attach", "⌦ kill", "⇥ mark"}, []string{"take"}},
+		{"sh", []string{"⏎ take", "⌦ kill"}, []string{"⏎ attach"}},
+		{"m", []string{"⏎ in", "⌦ kill"}, []string{"⌃x"}},
+		{"mh", []string{"⏎ in", "⌦ kill"}, []string{"⌃x"}},
+	} {
+		got := hints(c.state)
+		for _, want := range c.want {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: %q does not offer %q", c.state, got, want)
+			}
+		}
+		for _, none := range c.wantNone {
+			if strings.Contains(got, none) {
+				t.Errorf("%s: %q offers %q, which would do nothing", c.state, got, none)
+			}
+		}
+	}
+}
+
+// The letters the preview and the hint line branch on, which fzf reads and
+// this program is not running to be asked for.
+func TestRowStateSaysWhatIsRunningAndWhoHasIt(t *testing.T) {
+	for _, c := range []struct {
+		what string
+		r    row
+		want string
+	}{
+		{"a place with nothing running", row{}, "r"},
+		{"a session nobody else is in", row{session: "a"}, "s"},
+		{"a session another terminal has", row{session: "a", held: true}, "sh"},
+		{"a checkout holding two", row{count: 2}, "m"},
+		{"a checkout holding one another terminal has",
+			row{count: 1, found: []Session{{Clients: "1"}}}, "mh"},
+	} {
+		if got := c.r.state(); got != c.want {
+			t.Errorf("%s: state = %q, want %q", c.what, got, c.want)
+		}
+	}
+}
+
+// go-git refuses a repository whose format version carries an extension it
+// does not implement, and git sets `worktreeconfig` on exactly the ones
+// worktrees have been cut from. The config file is read instead.
+func TestIdentityReadsARepositoryGoGitWouldRefuseToOpen(t *testing.T) {
+	dir := repoAt(t, filepath.Join(t.TempDir(), "checkout"))
+	write(t, filepath.Join(dir, ".git", "config"), `[core]
+	repositoryformatversion = 1
+[extensions]
+	worktreeconfig = true
+[remote "origin"]
+	url = git@github.com:acme/api.git
+`)
+	if got := identity(dir); got != "acme/api" {
+		t.Errorf("identity = %q, want %q", got, "acme/api")
+	}
+}
+
+// A checkout with one remote under another name still knows what it is.
+func TestIdentityFallsPastOrigin(t *testing.T) {
+	dir := repoAt(t, filepath.Join(t.TempDir(), "checkout"))
+	write(t, filepath.Join(dir, ".git", "config"), `[remote "upstream"]
+	url = https://github.com/acme/api.git
+`)
+	if got := identity(dir); got != "acme/api" {
+		t.Errorf("identity = %q, want %q", got, "acme/api")
+	}
+	if got := identity(filepath.Join(t.TempDir(), "nothing")); got != "" {
+		t.Errorf("a directory with no config gave %q", got)
+	}
+}
+
+// The reason to read a list of 114 rather than type into it is to find what
+// is running, so what is running leads.
+func TestRepoRowsLeadWithWhatIsAlive(t *testing.T) {
+	root := t.TempDir()
+	quiet := repoAt(t, filepath.Join(root, "aaa"))
+	busy := repoAt(t, filepath.Join(root, "zzz"))
+	live := []Session{{Name: "one", Dir: busy}}
+
+	got := repoRows(live, []string{quiet, busy}, nil)
+	if len(got) != 2 || got[0].dir != busy {
+		t.Fatalf("led with %q, want the one holding a session", got[0].dir)
+	}
+	if got[0].count != 1 || got[1].count != 0 {
+		t.Errorf("counts %d / %d", got[0].count, got[1].count)
+	}
+	if cells := []rune(visible(got[0].status)); cells[1] != '1' {
+		t.Errorf("a repository holding one rendered %q", visible(got[0].status))
+	}
+}
+
+// How much is alive, in the one cell it gets.
+func TestTallyCountsWhatIsBelow(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want string
+	}{{0, " "}, {-1, " "}, {1, "1"}, {9, "9"}, {10, "+"}, {40, "+"}} {
+		if got := tally(c.n); got != c.want {
+			t.Errorf("tally(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+// fzf reports only what it is told to expect, so a key the loop acts on and
+// the arguments do not name is a key that does nothing at all — however
+// plainly the hint line offers it.
+func TestEveryKeyTheLoopActsOnIsExpected(t *testing.T) {
+	body, err := os.ReadFile("ui.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[string]string{
+		"keyNew": keyNew, "keyRepos": keyRepos,
+		"keyKill": keyKill, "keyKillHard": keyKillHard,
+	}
+	for ident, key := range named {
+		acted := regexp.MustCompile(`case [^\n]*\b` + ident + `\b`).Match(body)
+		listed := slices.Contains(expected, key)
+		if acted && !listed {
+			t.Errorf("the loop acts on %s (%q) and the picker never reports it", ident, key)
+		}
+		if listed && !acted {
+			t.Errorf("%s (%q) is expected and the loop does nothing with it", ident, key)
+		}
+	}
 }
