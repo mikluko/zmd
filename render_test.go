@@ -309,9 +309,11 @@ func TestPlaceNameIsTheThingUnderItsContainer(t *testing.T) {
 	}
 }
 
-// A name is a handle. It has to be typeable, unique among what is running,
-// and free of the separator zmx cannot hold in a socket name.
-func TestSessionNameIsAFreeHandle(t *testing.T) {
+// A name is an address. It has to be unique among what is running, say where
+// it came from, and carry none of the separator zmx cannot hold in a socket
+// name.
+func TestSessionNameIsAFreeAddress(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
 	var live []Session
 	seen := map[string]bool{}
 	for range 200 {
@@ -321,6 +323,9 @@ func TestSessionNameIsAFreeHandle(t *testing.T) {
 		}
 		if strings.ContainsAny(name, "/ \t") {
 			t.Fatalf("%q carries what zmx cannot hold in a name", name)
+		}
+		if !strings.HasPrefix(name, "zmd.ghostty.") {
+			t.Fatalf("%q does not say what made it or where", name)
 		}
 		seen[name] = true
 		live = append(live, Session{Name: name})
@@ -530,5 +535,40 @@ func TestEveryKeyTheLoopActsOnIsExpected(t *testing.T) {
 		if listed && !acted {
 			t.Errorf("%s (%q) is expected and the loop does nothing with it", ident, key)
 		}
+	}
+}
+
+// The middle segment is the terminal the session was made in, read rather
+// than assumed, so the name stays true where the deck runs somewhere else.
+func TestTerminalNamesWhatTheSessionWasMadeIn(t *testing.T) {
+	for _, c := range []struct{ env, want string }{
+		{"ghostty", "ghostty"},
+		{"Apple_Terminal", "appleterminal"},
+		{"iTerm.app", "itermapp"},
+		{"", "term"},
+		{"!!!", "term"},
+	} {
+		t.Setenv("TERM_PROGRAM", c.env)
+		if got := terminal(); got != c.want {
+			t.Errorf("TERM_PROGRAM=%q gave %q, want %q", c.env, got, c.want)
+		}
+	}
+}
+
+// Four bytes, hex, and never the same twice in a row by accident.
+func TestShortIDIsEightHexCharacters(t *testing.T) {
+	seen := map[string]bool{}
+	for range 500 {
+		id := shortID()
+		if len(id) != 8 {
+			t.Fatalf("%q is %d characters, want 8", id, len(id))
+		}
+		if strings.Trim(id, "0123456789abcdef") != "" {
+			t.Fatalf("%q is not hex", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) < 450 {
+		t.Errorf("500 draws gave %d distinct ids", len(seen))
 	}
 }

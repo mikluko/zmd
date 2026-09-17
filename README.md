@@ -41,8 +41,8 @@ Typing narrows whatever rung you are on. The prompt says which that is.
 
 ```
  ●   retry-bug              acme/gateway
- ○   rowan-82               acme/gateway
- ●   harbor-41              widget/api
+ ○   zmd.ghostty.6f2a91c4   acme/gateway
+ ●   zmd.ghostty.b71e0d55   widget/api
  ↑↑↑
  │││
  ││└─ reserved
@@ -135,13 +135,18 @@ which is how a session is taken.
 
 ## How sessions are named
 
-A word and two digits: `harbor-41`, `sage-03`, `lantern-88`. Short enough to
-type and to say out loud, which is the whole of what a name is for.
+```
+zmd.ghostty.6f2a91c4
+└┬┘ └──┬──┘ └───┬──┘
+ │     │        └─ four bytes of randomness, hex
+ │     └────────── the terminal it was made in, read from TERM_PROGRAM
+ └──────────────── what made it, so a session zmd started is told from one
+                   it merely found
+```
 
-A name says nothing about what a session is. What a session is for is
-metadata, set with `zmx set <name> title=…`, and metadata is what the list
-reads a session by — the handle is the fallback, and what a session goes by
-where nothing has labelled it.
+The name is an address and says nothing about the work. What a session is for
+is metadata kept against this name, and the name only has to be unique and to
+say where it came from.
 
 zmx names each session's unix socket after it, flat in one directory, so a
 name carrying a separator creates nothing and reports nothing. These carry
