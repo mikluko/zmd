@@ -54,6 +54,13 @@ func parseSessions(r io.Reader) []Session {
 			if !ok {
 				continue
 			}
+			// `zmx list` writes a marker ahead of the first field's label,
+			// `→ ` on the session the terminal is attached to, so the label
+			// is the last word of what precedes the `=` rather than all of
+			// it. Reading the whole of it drops that session from the list.
+			if i := strings.LastIndexAny(key, " \t"); i >= 0 {
+				key = key[i+1:]
+			}
 			switch key {
 			case "name":
 				s.Name = value
