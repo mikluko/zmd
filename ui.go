@@ -13,14 +13,43 @@ import (
 	"unsafe"
 )
 
-// The two lists. Directories are where a session can be, sessions are where
-// one is, and tab is the whole of the navigation between them.
+// The three lists. Folders are the filesystem, walked a level at a time;
+// repositories are the directories below home holding a `.git`; sessions are
+// what is running. tab moves between them and is the whole of the navigation.
 type mode int
 
 const (
-	modeDir mode = iota
-	modeSession
+	modeFolders mode = iota
+	modeRepos
+	modeSessions
 )
+
+func (m mode) String() string {
+	switch m {
+	case modeRepos:
+		return "repos"
+	case modeSessions:
+		return "sessions"
+	}
+	return "folders"
+}
+
+func modeNamed(name string) (mode, bool) {
+	for _, m := range []mode{modeFolders, modeRepos, modeSessions} {
+		if m.String() == name {
+			return m, true
+		}
+	}
+	return 0, false
+}
+
+// next returns the view one step along, wrapping at both ends.
+func (m mode) next(forward bool) mode {
+	if forward {
+		return mode((int(m) + 1) % 3)
+	}
+	return mode((int(m) + 2) % 3)
+}
 
 // A session with a client attached is filled, one with none is hollow. The
 // column is one circle per session, in the order the session list shows them,
@@ -30,12 +59,11 @@ const (
 	detached = "○"
 )
 
-// row is one line of either list: what to attach to, or what to create.
+// row is one line of any of the lists.
 type row struct {
 	session string   // the session to attach to, empty where one has to be made
-	name    string   // the name to make it under
-	dir     string   // where to make it
-	several bool     // more sessions here than enter can choose between
+	dir     string   // what the row stands for, empty for a session row
+	several bool     // more sessions here than one keystroke can choose between
 	cells   []string // what the line shows
 }
 
@@ -55,7 +83,7 @@ func circles(found []Session) string {
 // byDir groups sessions by the directory they run in, each group by name.
 //
 // Grouping by directory rather than by name is what makes a session this tool
-// never named, supacode's among them, count against the repository it sits in.
+// never named, supacode's among them, count against the directory it sits in.
 func byDir(live []Session) map[string][]Session {
 	found := make(map[string][]Session)
 	for _, s := range live {
@@ -71,18 +99,18 @@ func byDir(live []Session) map[string][]Session {
 	return found
 }
 
-// dirRows returns one row per place a session can be started.
-func dirRows(found []Target, live []Session) []row {
+// dirRows returns one row per directory, marked with what runs in it.
+func dirRows(dirs []string, live []Session, label func(string) string) []row {
 	here := byDir(live)
 
-	rows := make([]row, len(found))
-	for i, t := range found {
-		in := here[filepath.Clean(t.Dir)]
-		r := row{name: t.Name, dir: t.Dir, several: len(in) > 1}
+	rows := make([]row, len(dirs))
+	for i, dir := range dirs {
+		in := here[filepath.Clean(dir)]
+		r := row{dir: dir, several: len(in) > 1}
 		if len(in) == 1 {
 			r.session = in[0].Name
 		}
-		r.cells = []string{circles(in), t.Name, shorten(t.Dir)}
+		r.cells = []string{circles(in), label(dir)}
 		rows[i] = r
 	}
 	return rows
@@ -91,8 +119,11 @@ func dirRows(found []Target, live []Session) []row {
 // sessionRows returns one row per running session, or per session in dir
 // where dir is given.
 func sessionRows(live []Session, dir string) []row {
+	sorted := append([]Session(nil), live...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
 	var rows []row
-	for _, s := range sortedByName(live) {
+	for _, s := range sorted {
 		if dir != "" && filepath.Clean(s.Dir) != filepath.Clean(dir) {
 			continue
 		}
@@ -102,12 +133,6 @@ func sessionRows(live []Session, dir string) []row {
 		})
 	}
 	return rows
-}
-
-func sortedByName(live []Session) []Session {
-	out := append([]Session(nil), live...)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
 }
 
 // lines renders rows for fzf: the index, what the preview reads, and what is
@@ -133,7 +158,7 @@ func lines(rows []row) []string {
 // at returns the row whose directory holds dir most closely, or -1.
 //
 // The longest directory that is a prefix wins, so a worktree is answered with
-// itself rather than with the repository it belongs to.
+// itself rather than with the repository above it.
 func at(rows []row, dir string) int {
 	if dir == "" {
 		return -1
@@ -196,11 +221,11 @@ func previewLayout(cols, rows int) string {
 	}
 }
 
-// args returns the picker's arguments for one mode.
+// args returns the picker's arguments for one view.
 //
 // The query sits at the top, where the list grows away from it, and the only
-// keys the picker hands back are the two the caller acts on.
-func args(m mode, prompt string, cursor int) []string {
+// keys the picker hands back are the ones the caller acts on.
+func args(m mode, prompt, header string, cursor int) []string {
 	out := []string{
 		"--delimiter=\t",
 		"--with-nth=3..",
@@ -208,86 +233,96 @@ func args(m mode, prompt string, cursor int) []string {
 		"--layout=reverse",
 		"--no-sort",
 		"--prompt=" + prompt,
-		"--expect=" + strings.Join([]string{keyMode, keyModeBack, keyNew, keyKill, keyKillHard}, ","),
+		"--expect=" + strings.Join([]string{
+			keyMode, keyModeBack, keyNew, keyKill, keyKillHard, keyUp, keyFind,
+		}, ","),
 	}
 
-	preview := "zmx history {2}"
-	header := "⏎ attach   ⌦ kill   tab directories"
-	if m == modeDir {
-		preview = "lsd -la --color=always {2}"
-		header = "⏎ attach or start   ⌥⏎ start another   ⌦ kill   tab sessions"
+	preview := "lsd -la --color=always {2}"
+	if m == modeSessions {
+		preview = "zmx history {2}"
 	}
 	if layout := previewLayout(termSize()); layout != "" {
 		out = append(out, "--preview="+preview, "--preview-window="+layout)
 	}
 	out = append(out, "--header="+header)
 
-	// The cursor starts on the directory this pane was opened in, so a new
-	// pane is one keystroke from where it stands.
-	//
-	// --sync is what makes it land: an action bound to start runs as soon as
-	// the picker opens, which is before the list it moves through has
-	// arrived, and moving to the second line of nothing does nothing.
+	// The cursor starts where the pane stands, so a new pane is one keystroke
+	// from where it is. --sync is what makes it land: an action bound to
+	// start otherwise runs before the list it moves through has arrived.
 	if cursor > 0 {
 		out = append(out, "--sync", "--bind=start:pos("+strconv.Itoa(cursor+1)+")")
 	}
 	return out
 }
 
-// navigate walks the two lists until something is chosen or the picker is
-// left, and returns the session to attach to and where to create it.
-func navigate(root string) (name, dir string, err error) {
-	m, filter := modeDir, ""
+// view is where the walk of the lists has got to.
+type view struct {
+	mode   mode
+	dir    string // folders: the directory listed. sessions: the one filtered to.
+	search bool   // folders: listing everything below dir rather than its children
+}
+
+// navigate walks the lists until something is chosen or the picker is left,
+// and returns the session to attach to and where to create it.
+func navigate(start string) (name, dir string, err error) {
+	v := opening(start)
 	for {
 		live, err := sessions()
 		if err != nil {
 			return "", "", err
 		}
 
-		var rows []row
-		var prompt string
-		switch m {
-		case modeDir:
-			found := targets(root)
-			if len(found) == 0 {
-				return "", "", fmt.Errorf("no repositories below %s", shorten(root))
-			}
-			rows, prompt = dirRows(found, live), "zmx dir> "
-		default:
-			rows = sessionRows(live, filter)
-			prompt = "zmx session> "
-			if filter != "" {
-				prompt = "zmx " + filepath.Base(filter) + "> "
-			}
-			if len(rows) == 0 {
-				m, filter = modeDir, ""
-				continue
-			}
+		rows, prompt, header := list(v, live)
+		// fzf given nothing to show exits at once, which would take the
+		// picker with it: an empty list is a line saying so, and tab still
+		// leads out of it.
+		if len(rows) == 0 {
+			rows = []row{{cells: []string{"", empty(v)}}}
 		}
-
 		cursor := -1
-		if m == modeDir {
-			if here, err := os.Getwd(); err == nil {
-				cursor = at(rows, here)
-			}
+		if v.mode != modeSessions {
+			cursor = at(rows, start)
 		}
 
-		key, index, err := present(lines(rows), args(m, prompt, cursor))
+		key, index, err := present(lines(rows), args(v.mode, prompt, header, cursor))
 		if errors.Is(err, errCancelled) {
 			return "", "", errCancelled
 		}
 		if err != nil {
 			return "", "", err
 		}
-		chosen := rows[index]
+		var chosen row
+		if index < len(rows) {
+			chosen = rows[index]
+		}
 
 		switch key {
+		case keyMode, keyModeBack:
+			v = view{mode: v.mode.next(key == keyMode), dir: v.dir}
+			if v.mode == modeFolders && v.dir == "" {
+				v.dir = filepath.Dir(start)
+			}
+			remember(start, v.mode)
+			continue
+
+		case keyUp:
+			if v.mode == modeFolders {
+				v = view{mode: modeFolders, dir: filepath.Dir(v.dir)}
+			}
+			continue
+
+		case keyFind:
+			if v.mode == modeFolders {
+				v.search = !v.search
+			}
+			continue
+
 		case keyKill, keyKillHard:
 			// A directory holding several is the same ambiguity enter meets,
-			// and killing every one of them is not what a single keystroke
-			// should mean.
+			// and killing every one of them is not what one keystroke means.
 			if chosen.several {
-				m, filter = modeSession, chosen.dir
+				v = view{mode: modeSessions, dir: chosen.dir}
 				continue
 			}
 			if chosen.session == "" {
@@ -307,39 +342,115 @@ func navigate(root string) (name, dir string, err error) {
 			}
 			continue
 
-		case keyMode, keyModeBack:
-			if m == modeDir {
-				m = modeSession
-			} else {
-				m = modeDir
-			}
-			filter = ""
-			continue
-
 		case keyNew:
-			if m != modeDir {
+			if chosen.dir == "" {
 				continue
 			}
-			label, err := promptText("label> ", "a second session in "+chosen.name)
+			if chosen.session == "" && !chosen.several {
+				return sessionName(chosen.dir), chosen.dir, nil
+			}
+			label, err := promptText("label> ", "another session in "+shorten(chosen.dir))
 			if errors.Is(err, errCancelled) {
 				continue
 			}
 			if err != nil {
 				return "", "", err
 			}
-			return sessionSafe(chosen.name + "+" + label), chosen.dir, nil
+			return sessionName(chosen.dir) + "+" + label, chosen.dir, nil
 		}
 
-		// Enter. A directory holding more than one session cannot be
-		// answered with a guess, so it opens the list that can.
+		// Enter. In the folders list it walks: a directory is a place to go
+		// into, and alt-enter is what opens a session there.
+		if v.mode == modeFolders {
+			if chosen.dir != "" {
+				v = view{mode: modeFolders, dir: chosen.dir}
+			}
+			continue
+		}
 		if chosen.several {
-			m, filter = modeSession, chosen.dir
+			v = view{mode: modeSessions, dir: chosen.dir}
 			continue
 		}
 		if chosen.session != "" {
 			return chosen.session, "", nil
 		}
-		return chosen.name, chosen.dir, nil
+		if chosen.dir != "" {
+			return sessionName(chosen.dir), chosen.dir, nil
+		}
+		// The line saying the list is empty stands for nothing to attach to.
+		continue
+	}
+}
+
+// empty is what a list with nothing in it says.
+func empty(v view) string {
+	switch v.mode {
+	case modeRepos:
+		return "no repositories below home"
+	case modeSessions:
+		if v.dir != "" {
+			return "no sessions in " + shorten(v.dir)
+		}
+		return "no sessions running"
+	}
+	return "no folders in " + shorten(v.dir)
+}
+
+// opening returns the view a pane standing in start opens on: the one it was
+// left on there, and otherwise the one that matches where it stands.
+func opening(start string) view {
+	if m, ok := rememberedView(start); ok {
+		if m == modeFolders {
+			return view{mode: modeFolders, dir: filepath.Dir(start)}
+		}
+		return view{mode: m}
+	}
+	if isRepo(start) {
+		return view{mode: modeRepos}
+	}
+	return view{mode: modeFolders, dir: filepath.Dir(start)}
+}
+
+// isRepo reports whether dir holds a `.git`, which a repository and a linked
+// worktree both do.
+func isRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
+// list renders the view: its rows, its prompt and what its keys do.
+func list(v view, live []Session) ([]row, string, string) {
+	switch v.mode {
+	case modeRepos:
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "."
+		}
+		rows := dirRows(repositories(home), live, shorten)
+		return rows, "zmx repos> ", "⏎ attach or start   ⌥⏎ label   ⌦ kill   tab folders"
+
+	case modeSessions:
+		prompt := "zmx sessions> "
+		if v.dir != "" {
+			prompt = "zmx " + filepath.Base(v.dir) + "> "
+		}
+		return sessionRows(live, v.dir), prompt, "⏎ attach   ⌦ kill   tab folders"
+
+	default:
+		dirs, header := folders(v.dir), "⏎ enter   ⌥⏎ start here   ← up   ⌃f search   tab repos"
+		label := filepath.Base
+		if v.search {
+			dirs = under(v.dir)
+			header = "⏎ enter   ⌥⏎ start here   ⌃f children only   tab repos"
+			label = func(dir string) string {
+				rel, err := filepath.Rel(v.dir, dir)
+				if err != nil {
+					return dir
+				}
+				return rel
+			}
+		}
+		return dirRows(dirs, live, label), "zmx " + shorten(v.dir) + "> ", header
 	}
 }
 
@@ -375,8 +486,12 @@ func killSession(name string) error {
 }
 
 // run presents the picker and attaches to what it answers.
-func run(root string) error {
-	name, dir, err := navigate(root)
+func run() error {
+	start, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	name, dir, err := navigate(start)
 	if err != nil {
 		return err
 	}

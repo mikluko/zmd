@@ -95,12 +95,3 @@ func parseCwd(value string) string {
 	}
 	return u.Path
 }
-
-// sessionSafe rewrites a name zmx cannot hold.
-//
-// zmx gives each session a unix socket named after it, so a name carrying a
-// separator is a path and the session fails to create. Nothing reports this:
-// `zmx attach org/repo` exits having made no session at all.
-func sessionSafe(name string) string {
-	return strings.ReplaceAll(name, "/", ".")
-}

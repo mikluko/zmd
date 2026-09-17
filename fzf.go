@@ -27,6 +27,8 @@ const (
 	keyNew      = "alt-enter"
 	keyKill     = "delete"
 	keyKillHard = "ctrl-delete"
+	keyUp       = "left"
+	keyFind     = "ctrl-f"
 )
 
 // runFzf presents lines and returns what fzf wrote and the code it ended on.
