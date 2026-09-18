@@ -166,6 +166,12 @@ A pane that has held nothing has only where it stands to go on, so it opens
 one rung in, narrowed to that directory, with the cursor on the offer of a
 session there. `left` pops back to every session there is.
 
+Narrowing reaches downwards: a directory holds the work under it as much as
+the work in it, and a repository's worktrees are below the repository. The
+repos rung already counts them that way, so a rung that stopped at an exact
+match would disagree with the count that led to it. The offer is for the
+directory itself, never for anywhere below it.
+
 ```
 acme/gateway>
  ●   retry-bug        acme/gateway   ~/src/acme/gateway

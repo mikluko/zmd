@@ -61,7 +61,8 @@ func rows(r rung, live []Session, repos []string, ident map[string]string) []row
 // newSession is the row that stands for starting one rather than joining one.
 const newSession = "<new session>"
 
-// liveRows is one row per running session, or per session standing in dir.
+// liveRows is one row per running session, or per session standing at or
+// below dir.
 //
 // The handle leads, since what tells two sessions apart is what they are for
 // rather than where they are: a place holding several holds them at one path.
@@ -70,10 +71,15 @@ const newSession = "<new session>"
 // `~/Forge/uptime-com`, and a session about to be started somewhere needs to
 // say where and not only what.
 //
-// A rung narrowed to one place ends with the offer of another session there.
-// Without it a pane standing somewhere new has no way to say so: every row
-// belongs to a session that is already running, and starting one beside the
-// cursor starts it wherever the cursor happens to be.
+// Narrowing reaches downwards: a directory holds the work under it as much as
+// the work in it, and a repository's worktrees are below the repository. The
+// repos rung already counts them that way, and a rung that did not would
+// disagree with the count that led to it.
+//
+// The rung ends with the offer of another session, in dir itself rather than
+// anywhere below it. Without the offer a pane standing somewhere new has no
+// way to say so: every row belongs to a session that is already running, and
+// starting one beside the cursor starts it wherever the cursor happens to be.
 func liveRows(dir string, live []Session, ident map[string]string) []row {
 	sorted := append([]Session(nil), live...)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -86,7 +92,7 @@ func liveRows(dir string, live []Session, ident map[string]string) []row {
 	out := make([]row, 0, len(sorted))
 	for i := range sorted {
 		s := sorted[i]
-		if dir != "" && filepath.Clean(s.Dir) != filepath.Clean(dir) {
+		if dir != "" && !under(dir, s.Dir) {
 			continue
 		}
 		out = append(out, row{

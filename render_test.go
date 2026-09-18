@@ -586,6 +586,9 @@ func TestANarrowedSessionsRungOffersOneMore(t *testing.T) {
 	if len(narrowed) != 2 {
 		t.Fatalf("narrowed to /a gave %d rows, want the session and the offer", len(narrowed))
 	}
+	if has(narrowed, "/b") {
+		t.Error("narrowing to /a kept a session standing in /b")
+	}
 	last := narrowed[len(narrowed)-1]
 	if last.cells[0] != newSession || last.dir != "/a" || last.session != "" {
 		t.Errorf("the last row is %q / %q / %q", last.cells[0], last.dir, last.session)
@@ -668,5 +671,36 @@ func TestConfirmTreatsADismissalAsNo(t *testing.T) {
 		if strings.Contains(after, "errCancelled") {
 			t.Errorf("%s still branches on a dismissal", caller)
 		}
+	}
+}
+
+// Narrowing reaches downwards: a directory holds the work under it as much as
+// the work in it, and a worktree is below the repository it was cut from. A
+// rung that stopped at an exact match would disagree with the count on the
+// repos rung, which already reaches down.
+func TestANarrowedSessionsRungReachesDownwards(t *testing.T) {
+	live := []Session{
+		{Name: "at-the-root", Clients: "0", Dir: "/a"},
+		{Name: "in-a-worktree", Clients: "0", Dir: "/a/.claude/worktrees/a-fix"},
+		{Name: "deeper-still", Clients: "0", Dir: "/a/b/c"},
+		{Name: "a-prefix-not-a-path", Clients: "0", Dir: "/ab"},
+		{Name: "elsewhere", Clients: "0", Dir: "/b"},
+	}
+
+	got := liveRows("/a", live, nil)
+	var names []string
+	for _, r := range got {
+		if r.session != "" {
+			names = append(names, r.session)
+		}
+	}
+	slices.Sort(names)
+	if want := "at-the-root,deeper-still,in-a-worktree"; strings.Join(names, ",") != want {
+		t.Errorf("narrowed to /a gave %q, want %q", strings.Join(names, ","), want)
+	}
+	// The offer is for the place itself, not for anywhere below it.
+	last := got[len(got)-1]
+	if last.cells[0] != newSession || last.dir != "/a" {
+		t.Errorf("the offer is %q in %q", last.cells[0], last.dir)
 	}
 }
