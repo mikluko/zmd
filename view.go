@@ -63,9 +63,12 @@ const newSession = "<new session>"
 
 // liveRows is one row per running session, or per session standing in dir.
 //
-// The place is the last cell and the session's own handle the first, since
-// what tells two sessions apart is what they are for rather than where they
-// are: a place holding several holds them at one path.
+// The handle leads, since what tells two sessions apart is what they are for
+// rather than where they are: a place holding several holds them at one path.
+// Then what git calls the place, then the path itself, which the first of
+// those does not give up — `mikluko/workspace-uptime` stands at
+// `~/Forge/uptime-com`, and a session about to be started somewhere needs to
+// say where and not only what.
 //
 // A rung narrowed to one place ends with the offer of another session there.
 // Without it a pane standing somewhere new has no way to say so: every row
@@ -92,7 +95,7 @@ func liveRows(dir string, live []Session, ident map[string]string) []row {
 			session: s.Name,
 			held:    s.heldElsewhere(),
 			status:  status(s.Dir, []Session{s}),
-			cells:   []string{sessionLabel(s), placeName(s.Dir, ident)},
+			cells:   whereCells(sessionLabel(s), s.Dir, ident),
 		})
 	}
 	if dir == "" {
@@ -101,8 +104,22 @@ func liveRows(dir string, live []Session, ident map[string]string) []row {
 	return append(out, row{
 		dir:    filepath.Clean(dir),
 		status: status(dir, nil),
-		cells:  []string{newSession, placeName(dir, ident)},
+		cells:  whereCells(newSession, dir, ident),
 	})
+}
+
+// whereCells is what a session row shows: what it is, what git calls where
+// it is, and where that is.
+//
+// The middle goes blank where it would only repeat the path, `~` being the
+// case: the two cells are there to say different things, and a row that says
+// one of them twice has spent a column on nothing.
+func whereCells(label, dir string, ident map[string]string) []string {
+	name, path := placeName(dir, ident), shorten(dir)
+	if name == path {
+		name = ""
+	}
+	return []string{label, name, path}
 }
 
 // repoRows is one row per checkout that is not a worktree.

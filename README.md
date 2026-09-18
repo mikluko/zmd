@@ -40,9 +40,9 @@ Typing narrows whatever rung you are on. The prompt says which that is.
 ## The list
 
 ```
- ●   retry-bug              acme/gateway
- ○   zmd.ghostty.6f2a91c4   acme/gateway
- ●   zmd.ghostty.b71e0d55   widget/api
+ ●   retry-bug              acme/gateway   ~/src/acme/gateway
+ ○   zmd.ghostty.6f2a91c4   acme/gateway   ~/src/acme/gateway
+ ●   zmd.ghostty.b71e0d55   widget/api     ~/src/widget/api
  ↑↑↑
  │││
  ││└─ reserved
@@ -60,6 +60,11 @@ On the repositories rung the second cell is a count instead — how many
 sessions are alive at or below the row, `+` past nine. At a level where no
 single session can be acted on, how much is alive below is the whole of what
 the mark is read for, and the repositories holding something lead the list.
+
+A session row says what it is, what git calls where it is, and where that is.
+The middle earns its column because the two differ: a checkout named
+`acme/workspace` can stand at `~/src/other`, which the name does not give up.
+It goes blank where it would only repeat the path, `~` being the case.
 
 **A place's name** is what git says it is: `owner/name`, read off the
 checkout's remote. The path is where a checkout happens to sit and says
@@ -162,9 +167,9 @@ one rung in, narrowed to that directory, with the cursor on the offer of a
 session there. `left` pops back to every session there is.
 
 ```
-mikluko/zmd>
- ●   Forge.mikluko.zmd      mikluko/zmd
-     <new session>          mikluko/zmd     ← the cursor starts here
+acme/gateway>
+ ●   retry-bug        acme/gateway   ~/src/acme/gateway
+     <new session>    acme/gateway   ~/src/acme/gateway   ← the cursor starts here
 ```
 
 The directory the picker was *run* in is no use for this: a pane runs it in a

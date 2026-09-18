@@ -607,3 +607,31 @@ func TestANarrowedSessionsRungOffersOneMore(t *testing.T) {
 		}
 	}
 }
+
+// A session row says what it is, what git calls where it is, and where that
+// is. The middle earns its column only where it differs from the path:
+// `mikluko/workspace-uptime` stands at `~/Forge/uptime-com`, which the name
+// does not give up.
+func TestWhereCellsDoNotSayThePathTwice(t *testing.T) {
+	root := t.TempDir()
+	repo := repoAt(t, filepath.Join(root, "checkout"))
+	ident := map[string]string{repo: "acme/api"}
+
+	got := whereCells("harbor-41", repo, ident)
+	if got[1] != "acme/api" || got[2] != shorten(repo) {
+		t.Errorf("a checkout gave %q / %q", got[1], got[2])
+	}
+
+	// Home names itself, so the middle would only repeat the path.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	got = whereCells(newSession, home, nil)
+	if got[1] != "" {
+		t.Errorf("home gave %q in the middle, want it left blank", got[1])
+	}
+	if got[2] != "~" {
+		t.Errorf("home gave %q as the path", got[2])
+	}
+}
