@@ -535,7 +535,7 @@ func navigate(start string) (name, dir string, err error) {
 			}
 			if answer.key == keyKill {
 				ok, err := confirm(question(names))
-				if err != nil && !errors.Is(err, errCancelled) {
+				if err != nil {
 					return "", "", err
 				}
 				if !ok {
@@ -609,7 +609,7 @@ func enter(r row, live []Session) (string, string, error) {
 	}
 	if r.held {
 		ok, err := confirm(takes(r.cells[0]))
-		if err != nil && !errors.Is(err, errCancelled) {
+		if err != nil {
 			return "", "", err
 		}
 		if !ok {
@@ -686,14 +686,22 @@ func confirmArgs(q string) []string {
 		"--no-sort",
 		"--no-info",
 		"--prompt=" + q + " ",
-		"--header=↑↓ choose   ⏎ confirm",
+		"--header=↑↓ choose   ⏎ confirm   ⎋ no",
 	}
 }
 
 // confirm asks a yes or no question, answered with the same arrows as
-// everything else. The cursor starts on no, and escape is no.
+// everything else. The cursor starts on no, and so does escape.
+//
+// Escape answers the question rather than dismissing it: there is no third
+// thing a yes-or-no can mean, and a caller that had to tell a dismissal from
+// a no would be writing the same branch every time. It returns an error only
+// where the picker itself failed.
 func confirm(q string) (bool, error) {
 	index, err := pick([]string{"0\t\tno", "1\t\tyes"}, confirmArgs(q))
+	if errors.Is(err, errCancelled) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

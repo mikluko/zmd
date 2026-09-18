@@ -635,3 +635,38 @@ func TestWhereCellsDoNotSayThePathTwice(t *testing.T) {
 		t.Errorf("home gave %q as the path", got[2])
 	}
 }
+
+// Escape answers the question rather than dismissing it. There is no third
+// thing a yes-or-no can mean, and a caller that had to tell a dismissal from
+// a no would write the same branch every time — and one that forgot would
+// take the whole picker down over a declined confirmation.
+func TestConfirmTreatsADismissalAsNo(t *testing.T) {
+	body, err := os.ReadFile("ui.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(body)
+
+	// confirm swallows it, so it is named exactly once in there.
+	if !strings.Contains(src, "func confirm(q string) (bool, error) {") {
+		t.Fatal("confirm is not where this test thinks it is")
+	}
+	fn := src[strings.Index(src, "func confirm(q string) (bool, error) {"):]
+	fn = fn[:strings.Index(fn, "\n}\n")]
+	if !strings.Contains(fn, "errors.Is(err, errCancelled)") {
+		t.Error("confirm does not read a dismissal as no")
+	}
+
+	// And no caller has to know about it, which is the point.
+	for _, caller := range []string{"confirm(question(names))", "confirm(takes(r.cells[0]))"} {
+		i := strings.Index(src, caller)
+		if i < 0 {
+			t.Errorf("no call site %q", caller)
+			continue
+		}
+		after := src[i : i+200]
+		if strings.Contains(after, "errCancelled") {
+			t.Errorf("%s still branches on a dismissal", caller)
+		}
+	}
+}
