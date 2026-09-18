@@ -427,15 +427,30 @@ func navigate(start string) (name, dir string, err error) {
 	deck := dialDeck()
 	repos, ident := walked(context.Background(), deck, home)
 
-	// The ground floor is every session there is. Nothing above it is where
-	// the picker opens, the sessions being what a switch is between.
+	// The ground floor is every session there is, and the picker opens on it
+	// where the pane has held something: the cursor goes to what it last
+	// held, so its peers are around it.
+	//
+	// A pane that has held nothing has only where it stands to go on, so it
+	// opens one rung in, narrowed to that, where the offer of a session there
+	// is what the cursor lands on. Left pops back to everything.
 	stack := []rung{{view: viewSessions}}
+	opened := false
 	query := ""
 	for {
 		live, err := sessions()
 		if err != nil {
 			return "", "", err
 		}
+		if !opened {
+			opened = true
+			if lastHeld(live) == nil {
+				if at := filepath.Clean(start); under(home, at) {
+					stack = append(stack, rung{view: viewSessions, dir: at, name: placeName(at, ident)})
+				}
+			}
+		}
+
 		here := stack[len(stack)-1]
 		list := rows(here, live, repos, ident)
 		if len(list) == 0 {
@@ -450,6 +465,11 @@ func navigate(start string) (name, dir string, err error) {
 		if query == "" && here.view == viewSessions {
 			if held := lastHeld(live); held != nil {
 				cursor = named(list, held.Name)
+			}
+			// Narrowed to one place and nothing held: the offer of a session
+			// there is what was come for, and it is the last row.
+			if cursor < 0 && here.dir != "" {
+				cursor = len(list) - 1
 			}
 		}
 

@@ -157,6 +157,16 @@ none.
 On the sessions rung, with the cursor on the session this pane last held —
 which, after a detach, is the one just left, so its peers are around it.
 
+A pane that has held nothing has only where it stands to go on, so it opens
+one rung in, narrowed to that directory, with the cursor on the offer of a
+session there. `left` pops back to every session there is.
+
+```
+mikluko/zmd>
+ ●   Forge.mikluko.zmd      mikluko/zmd
+     <new session>          mikluko/zmd     ← the cursor starts here
+```
+
 The directory the picker was *run* in is no use for this: a pane runs it in a
 loop, and that loop's shell never chdirs, so it stands where the pane was
 opened however much work has happened since. That record is kept per pane,

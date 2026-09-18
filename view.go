@@ -58,11 +58,19 @@ func rows(r rung, live []Session, repos []string, ident map[string]string) []row
 	}
 }
 
+// newSession is the row that stands for starting one rather than joining one.
+const newSession = "<new session>"
+
 // liveRows is one row per running session, or per session standing in dir.
 //
 // The place is the last cell and the session's own handle the first, since
 // what tells two sessions apart is what they are for rather than where they
 // are: a place holding several holds them at one path.
+//
+// A rung narrowed to one place ends with the offer of another session there.
+// Without it a pane standing somewhere new has no way to say so: every row
+// belongs to a session that is already running, and starting one beside the
+// cursor starts it wherever the cursor happens to be.
 func liveRows(dir string, live []Session, ident map[string]string) []row {
 	sorted := append([]Session(nil), live...)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -87,7 +95,14 @@ func liveRows(dir string, live []Session, ident map[string]string) []row {
 			cells:   []string{sessionLabel(s), placeName(s.Dir, ident)},
 		})
 	}
-	return out
+	if dir == "" {
+		return out
+	}
+	return append(out, row{
+		dir:    filepath.Clean(dir),
+		status: status(dir, nil),
+		cells:  []string{newSession, placeName(dir, ident)},
+	})
 }
 
 // repoRows is one row per checkout that is not a worktree.

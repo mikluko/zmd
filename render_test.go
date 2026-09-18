@@ -572,3 +572,38 @@ func TestShortIDIsEightHexCharacters(t *testing.T) {
 		t.Errorf("500 draws gave %d distinct ids", len(seen))
 	}
 }
+
+// A rung narrowed to one place ends with the offer of another session there.
+// Without it a pane standing somewhere new has no way to say so: every other
+// row belongs to a session that is already running.
+func TestANarrowedSessionsRungOffersOneMore(t *testing.T) {
+	live := []Session{
+		{Name: "here", Clients: "0", Dir: "/a"},
+		{Name: "elsewhere", Clients: "0", Dir: "/b"},
+	}
+
+	narrowed := liveRows("/a", live, nil)
+	if len(narrowed) != 2 {
+		t.Fatalf("narrowed to /a gave %d rows, want the session and the offer", len(narrowed))
+	}
+	last := narrowed[len(narrowed)-1]
+	if last.cells[0] != newSession || last.dir != "/a" || last.session != "" {
+		t.Errorf("the last row is %q / %q / %q", last.cells[0], last.dir, last.session)
+	}
+	// Enter on it starts one rather than attaching, which is what `r` says.
+	if got := last.state(); got != "r" {
+		t.Errorf("the offer reads as %q, want r", got)
+	}
+
+	// Every session there is, with nowhere in particular: no offer, because
+	// there is no place for it to mean.
+	all := liveRows("", live, nil)
+	if len(all) != 2 {
+		t.Fatalf("unnarrowed gave %d rows, want one per session", len(all))
+	}
+	for _, r := range all {
+		if r.cells[0] == newSession {
+			t.Error("the unnarrowed rung offered a session with no place to start it in")
+		}
+	}
+}
