@@ -68,6 +68,8 @@ func main_(argv []string) error {
 			// what a picker would otherwise work out for itself, and a
 			// picker that cannot reach it does exactly that.
 			return serve(context.Background())
+		case "pick2":
+			return pick2()
 		case "history":
 			// What the picker's preview runs on a session row. Not in the
 			// usage, being a part of the picker rather than a thing to reach
