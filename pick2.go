@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -13,7 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// pickItem is a row of the list with what the matcher reads and what is drawn.
+// pickItem is a row of the list with what the matcher reads.
 type pickItem struct {
 	row  row
 	text string // the aligned cells, plain, which the query is matched against
@@ -26,71 +29,173 @@ type hit struct {
 	pos   []int
 }
 
-// previewMsg carries a session's scrollback, tagged with the cursor move it
-// was fetched for so a slower fetch cannot overwrite a newer one.
+// level is one rung of the stack with everything the view of it holds, so a
+// pop lands back where the push left.
+type level struct {
+	rung   rung
+	items  []pickItem
+	hits   []hit
+	cursor int
+	offset int
+	query  string
+	marked map[string]bool // by rowKey, so a mark survives a refilter
+}
+
+// rowKey is what identifies a row across rebuilds of its rung: the session it
+// stands for, or else its directory.
+func rowKey(r row) string {
+	if r.session != "" {
+		return "s:" + r.session
+	}
+	return "d:" + r.dir
+}
+
+// previewMsg carries a preview, tagged with the cursor move it was fetched for
+// so a slower fetch cannot overwrite a newer one.
 type previewMsg struct {
 	seq  int
 	text string
 }
 
-type pickModel struct {
-	items   []pickItem
-	hits    []hit
-	match   *matcher
-	query   textinput.Model
-	cursor  int
-	offset  int
-	width   int
-	height  int
-	seq     int
-	preview string
-	asking  string // an inline yes-or-no question, empty when none is open
-	chosen  *row
-	take    bool
+// killedMsg reports a kill and what is running after it.
+type killedMsg struct {
+	live []Session
+	err  error
 }
 
-func newPickModel(list []row, start int) pickModel {
+// outcome is what the picker was left with: a session to attach, and where to
+// start it when it is new. Empty means leave.
+type outcome struct {
+	name string
+	dir  string
+	take bool // detach the other terminal's client first
+}
+
+type pickModel struct {
+	live  []Session
+	repos []string
+	ident map[string]string
+
+	stack []*level
+	query textinput.Model
+	match *matcher
+
+	width, height int
+	seq           int
+	preview       string
+	status        string // an error or a notice, shown until the next key
+
+	asking string // an inline yes-or-no question, empty when none is open
+	onYes  func() (tea.Model, tea.Cmd)
+
+	result outcome
+}
+
+func newPickModel(live []Session, repos []string, ident map[string]string) *pickModel {
+	q := textinput.New()
+	q.Focus()
+	return &pickModel{live: live, repos: repos, ident: ident, query: q, match: newMatcher()}
+}
+
+func (m *pickModel) top() *level { return m.stack[len(m.stack)-1] }
+
+// push puts a rung on the stack, keeping the query typed on the one below.
+func (m *pickModel) push(r rung) {
+	if len(m.stack) > 0 {
+		m.top().query = m.query.Value()
+	}
+	l := &level{rung: r, marked: map[string]bool{}}
+	m.stack = append(m.stack, l)
+	m.rebuild(l)
+	m.query.SetValue("")
+	m.query.Prompt = r.prompt() + "> "
+}
+
+// pop drops the top rung.
+func (m *pickModel) pop() {
+	m.truncate(len(m.stack) - 1)
+}
+
+// truncate cuts the stack to n rungs and restores the new top as it was left.
+func (m *pickModel) truncate(n int) {
+	m.stack = m.stack[:n]
+	l := m.top()
+	m.query.SetValue(l.query)
+	m.query.CursorEnd()
+	m.query.Prompt = l.rung.prompt() + "> "
+}
+
+// toRepos jumps to the repositories: back to them where they are already on
+// the stack, pushed above the ground floor where they are not.
+func (m *pickModel) toRepos() {
+	for i, l := range m.stack {
+		if l.rung.view == viewRepos {
+			m.top().query = m.query.Value()
+			m.truncate(i + 1)
+			return
+		}
+	}
+	m.top().query = m.query.Value()
+	m.truncate(1)
+	m.push(rung{view: viewRepos})
+}
+
+// rebuild reads l's rows afresh from what is running, keeping the cursor on
+// the row it stood on, or at the same height where that row is gone.
+func (m *pickModel) rebuild(l *level) {
+	var keep string
+	if l.cursor < len(l.hits) {
+		keep = rowKey(l.items[l.hits[l.cursor].item].row)
+	}
+	list := rows(l.rung, m.live, m.repos, m.ident)
 	cells := make([][]string, len(list))
 	for i, r := range list {
 		cells[i] = r.cells
 	}
 	display := align(cells)
-	items := make([]pickItem, len(list))
+	l.items = make([]pickItem, len(list))
+	present := map[string]bool{}
 	for i, r := range list {
-		items[i] = pickItem{row: r, text: display[i]}
+		l.items[i] = pickItem{row: r, text: display[i]}
+		present[rowKey(r)] = true
 	}
-	q := textinput.New()
-	q.Prompt = "sessions> "
-	q.Focus()
-	m := pickModel{items: items, match: newMatcher(), query: q}
-	m.refilter()
-	if start >= 0 {
-		m.cursor = start
+	for k := range l.marked {
+		if !present[k] {
+			delete(l.marked, k)
+		}
 	}
-	return m
+	cursor := l.cursor
+	m.refilter(l, l.query)
+	l.cursor = min(cursor, max(len(l.hits)-1, 0))
+	for i, h := range l.hits {
+		if keep != "" && rowKey(l.items[h.item].row) == keep {
+			l.cursor = i
+		}
+	}
 }
 
-// refilter recomputes the hits for the current query, best first and in list
-// order among equals.
-func (m *pickModel) refilter() {
-	query := m.query.Value()
-	m.hits = m.hits[:0]
-	for i, it := range m.items {
+// refilter recomputes l's hits for query, best first and in list order among
+// equals, with the cursor back at the top.
+func (m *pickModel) refilter(l *level, query string) {
+	l.query = query
+	l.hits = l.hits[:0]
+	for i, it := range l.items {
 		if score, pos, ok := m.match.match(it.text, query); ok {
-			m.hits = append(m.hits, hit{item: i, score: score, pos: pos})
+			l.hits = append(l.hits, hit{item: i, score: score, pos: pos})
 		}
 	}
 	if query != "" {
-		sort.SliceStable(m.hits, func(i, j int) bool { return m.hits[i].score > m.hits[j].score })
+		sort.SliceStable(l.hits, func(i, j int) bool { return l.hits[i].score > l.hits[j].score })
 	}
-	m.cursor, m.offset = 0, 0
+	l.cursor, l.offset = 0, 0
 }
 
-func (m pickModel) current() *pickItem {
-	if m.cursor < 0 || m.cursor >= len(m.hits) {
+func (m *pickModel) current() *row {
+	l := m.top()
+	if l.cursor < 0 || l.cursor >= len(l.hits) {
 		return nil
 	}
-	return &m.items[m.hits[m.cursor].item]
+	return &l.items[l.hits[l.cursor].item].row
 }
 
 // fetchPreview supersedes whatever preview is in flight with one for the row
@@ -100,24 +205,29 @@ func (m *pickModel) fetchPreview() tea.Cmd {
 	return loadPreview(m.current(), m.seq)
 }
 
-// loadPreview reads the scrollback of it off the UI goroutine.
-func loadPreview(it *pickItem, seq int) tea.Cmd {
-	if it == nil || it.row.session == "" {
-		return func() tea.Msg { return previewMsg{seq: seq} }
-	}
-	name := it.row.session
+// loadPreview reads what r previews as off the UI goroutine: a session's
+// scrollback, or a place's git history.
+func loadPreview(r *row, seq int) tea.Cmd {
 	return func() tea.Msg {
 		var buf bytes.Buffer
-		history(name, &buf)
+		switch {
+		case r == nil:
+		case r.session != "":
+			history(r.session, &buf)
+		case r.dir != "":
+			out, _ := exec.Command("git", "-C", r.dir, "log", "--color=always", "--graph", "-50",
+				"--format=%C(auto)%h %as%d %s").Output()
+			buf.Write(out)
+		}
 		return previewMsg{seq: seq, text: buf.String()}
 	}
 }
 
-func (m pickModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, loadPreview(m.current(), m.seq))
+func (m *pickModel) Init() tea.Cmd {
+	return tea.Batch(textinput.Blink, m.fetchPreview())
 }
 
-func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -129,117 +239,263 @@ func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case killedMsg:
+		if msg.err != nil {
+			m.status = msg.err.Error()
+		}
+		m.live = msg.live
+		for _, l := range m.stack {
+			m.rebuild(l)
+		}
+		return m, m.fetchPreview()
+
 	case tea.KeyMsg:
+		m.status = ""
 		if m.asking != "" {
-			return m.answer(msg)
-		}
-		switch msg.String() {
-		case "esc", "ctrl+c":
-			return m, tea.Quit
-		case "up", "ctrl+p":
-			return m.move(-1)
-		case "down", "ctrl+n":
-			return m.move(1)
-		case "enter":
-			it := m.current()
-			if it == nil {
-				return m, nil
+			m.asking = ""
+			if msg.String() == "y" {
+				return m.onYes()
 			}
-			if it.row.held {
-				m.asking = takes(it.row.cells[0])
-				return m, nil
-			}
-			m.chosen = &it.row
-			return m, tea.Quit
+			return m, nil
 		}
-		before := m.query.Value()
-		var cmd tea.Cmd
-		m.query, cmd = m.query.Update(msg)
-		if m.query.Value() != before {
-			m.refilter()
-			return m, tea.Batch(cmd, m.fetchPreview())
-		}
-		return m, cmd
+		return m.key(msg)
 	}
 	return m, nil
 }
 
-// answer resolves the open question without leaving the list: y takes, and
-// anything else is no.
-func (m pickModel) answer(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	m.asking = ""
-	if msg.String() == "y" {
-		it := m.current()
-		m.chosen, m.take = &it.row, true
+func (m *pickModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	l := m.top()
+	switch msg.String() {
+	case "ctrl+c":
 		return m, tea.Quit
-	}
-	return m, nil
-}
-
-func (m pickModel) move(delta int) (tea.Model, tea.Cmd) {
-	next := m.cursor + delta
-	if next < 0 || next >= len(m.hits) {
+	case "esc", "left":
+		if len(m.stack) > 1 {
+			m.pop()
+			return m, m.fetchPreview()
+		}
+		if msg.String() == "left" {
+			return m, nil
+		}
+		if held := lastHeld(m.live); held != nil {
+			m.result = outcome{name: held.Name}
+		}
+		return m, tea.Quit
+	case "up", "ctrl+p":
+		return m.move(-1)
+	case "down", "ctrl+n":
+		return m.move(1)
+	case "ctrl+g":
+		m.toRepos()
+		return m, m.fetchPreview()
+	case "tab":
+		if r := m.current(); r != nil && r.dir != "" {
+			k := rowKey(*r)
+			l.marked[k] = !l.marked[k]
+			if !l.marked[k] {
+				delete(l.marked, k)
+			}
+		}
+		return m.move(1)
+	case "enter", "right":
+		return m.descend()
+	case "alt+enter":
+		if r := m.current(); r != nil && r.dir != "" {
+			m.result = outcome{name: sessionName(m.live), dir: r.dir}
+			return m, tea.Quit
+		}
+		return m, nil
+	case "delete", "alt+delete":
+		names := m.killTargets()
+		if len(names) == 0 {
+			return m, nil
+		}
+		kill := func() (tea.Model, tea.Cmd) {
+			l.marked = map[string]bool{}
+			return m, func() tea.Msg {
+				err := killSessions(names)
+				live, _ := sessions()
+				return killedMsg{live: live, err: err}
+			}
+		}
+		if msg.String() == "alt+delete" {
+			return kill()
+		}
+		m.asking, m.onYes = question(names), kill
 		return m, nil
 	}
-	m.cursor = next
+
+	before := m.query.Value()
+	var cmd tea.Cmd
+	m.query, cmd = m.query.Update(msg)
+	if m.query.Value() != before {
+		m.refilter(l, m.query.Value())
+		return m, tea.Batch(cmd, m.fetchPreview())
+	}
+	return m, cmd
+}
+
+// killTargets is every session the marked rows stand for, or the row under
+// the cursor where nothing is marked.
+func (m *pickModel) killTargets() []string {
+	l := m.top()
+	var picked []row
+	for _, it := range l.items {
+		if l.marked[rowKey(it.row)] {
+			picked = append(picked, it.row)
+		}
+	}
+	if len(picked) == 0 {
+		if r := m.current(); r != nil {
+			picked = append(picked, *r)
+		}
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, r := range picked {
+		for _, name := range killable(r, m.live) {
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+// descend is enter and right: attach, take, start, or push the rung below.
+func (m *pickModel) descend() (tea.Model, tea.Cmd) {
+	r := m.current()
+	if r == nil || r.dir == "" {
+		return m, nil
+	}
+	here := m.top().rung
+	switch {
+	case here.view == viewSessions && r.session != "":
+		if r.held {
+			name := r.session
+			m.asking = takes(r.cells[0])
+			m.onYes = func() (tea.Model, tea.Cmd) {
+				m.result = outcome{name: name, take: true}
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		m.result = outcome{name: r.session}
+		return m, tea.Quit
+	case here.view == viewRepos && r.trees > 0:
+		m.push(rung{view: viewCheckouts, dir: r.dir, name: r.cells[0]})
+		return m, m.fetchPreview()
+	case here.view != viewSessions && r.count > 0:
+		m.push(rung{view: viewSessions, dir: r.dir, name: r.cells[0]})
+		return m, m.fetchPreview()
+	default:
+		m.result = outcome{name: sessionName(m.live), dir: r.dir}
+		return m, tea.Quit
+	}
+}
+
+func (m *pickModel) move(delta int) (tea.Model, tea.Cmd) {
+	l := m.top()
+	next := l.cursor + delta
+	if next < 0 || next >= len(l.hits) {
+		return m, nil
+	}
+	l.cursor = next
 	return m, m.fetchPreview()
 }
 
 var (
 	matchStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
 	gutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	markStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	hintStyle   = lipgloss.NewStyle().Faint(true)
 	askStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
-	borderStyle = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderLeft(true)
+	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	sideBorder  = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderLeft(true)
+	underBorder = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(true)
 )
 
-func (m pickModel) View() string {
+func (m *pickModel) View() string {
 	if m.width == 0 {
 		return ""
 	}
-	listWidth, previewWidth := m.width, 0
-	if m.width >= 120 {
-		previewWidth = m.width * 55 / 100
-		listWidth = m.width - previewWidth
-	}
 	body := m.height - 2
-
-	var footer string
-	if m.asking != "" {
-		footer = askStyle.Render(m.asking + " y/N")
-	} else {
-		footer = hintStyle.Render("⏎ attach  ⎋ leave")
+	var main string
+	switch {
+	case m.width >= 120:
+		pw := m.width * 55 / 100
+		main = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.listView(m.width-pw, body),
+			sideBorder.Height(body).Render(previewView(m.preview, pw-1, body)))
+	case m.width >= 80 && m.height >= 15:
+		ph := body / 2
+		main = lipgloss.JoinVertical(lipgloss.Left,
+			m.listView(m.width, body-ph),
+			underBorder.Width(m.width).Render(previewView(m.preview, m.width, ph-1)))
+	default:
+		main = m.listView(m.width, body)
 	}
+	return m.query.View() + "\n" + main + "\n" + m.footer()
+}
 
-	list := m.listView(listWidth, body)
-	top := list
-	if previewWidth > 0 {
-		top = lipgloss.JoinHorizontal(lipgloss.Top, list, borderStyle.Height(body).Render(previewView(m.preview, previewWidth-1, body)))
+// footer is the open question, an error, or the keys that would do something
+// where the cursor stands.
+func (m *pickModel) footer() string {
+	switch {
+	case m.asking != "":
+		return askStyle.Render(m.asking + " y/N")
+	case m.status != "":
+		return errStyle.Render(m.status)
 	}
-	return m.query.View() + "\n" + top + "\n" + footer
+	var keys string
+	if r := m.current(); r != nil && r.dir != "" {
+		keys = hints(r.state())
+	}
+	if len(m.stack) > 1 {
+		keys += "  ⎋ back"
+	} else if lastHeld(m.live) != nil {
+		keys += "  ⎋ leave"
+	}
+	if m.top().rung.view != viewRepos {
+		keys += "  ⌃g repos"
+	}
+	if n := len(m.top().marked); n > 0 {
+		keys += "  " + strconv.Itoa(n) + " marked"
+	}
+	return hintStyle.Render(strings.TrimSpace(keys))
 }
 
 func (m *pickModel) listView(width, height int) string {
-	if m.cursor < m.offset {
-		m.offset = m.cursor
+	l := m.top()
+	if l.cursor < l.offset {
+		l.offset = l.cursor
 	}
-	if m.cursor >= m.offset+height {
-		m.offset = m.cursor - height + 1
+	if l.cursor >= l.offset+height {
+		l.offset = l.cursor - height + 1
 	}
 	lines := make([]string, 0, height)
-	for i := m.offset; i < len(m.hits) && len(lines) < height; i++ {
-		h := m.hits[i]
-		it := m.items[h.item]
+	if len(l.items) == 0 {
+		lines = append(lines, hintStyle.Render("  "+empty(l.rung)))
+	}
+	for i := l.offset; i < len(l.hits) && len(lines) < height; i++ {
+		h := l.hits[i]
+		it := l.items[h.item]
 		gutter := " "
-		if i == m.cursor {
+		switch {
+		case i == l.cursor:
 			gutter = gutterStyle.Render("▌")
+		case l.marked[rowKey(it.row)]:
+			gutter = markStyle.Render("▐")
 		}
-		line := ansi.Truncate(it.row.status+highlight(it.text, h.pos), width-1, "…")
-		if i == m.cursor {
+		status := it.row.status
+		if status == "" {
+			status = strings.Repeat(" ", statusWidth)
+		}
+		line := ansi.Truncate(status+highlight(it.text, h.pos), width-1, "…")
+		if i == l.cursor {
 			line = underCursor(line, width-1)
 		}
-		line = gutter + line
-		lines = append(lines, line)
+		lines = append(lines, gutter+line)
 	}
 	for len(lines) < height {
 		lines = append(lines, "")
@@ -283,7 +539,7 @@ func highlight(text string, pos []int) string {
 	return b.String()
 }
 
-// previewView is the end of the scrollback, cut to the box it is drawn in.
+// previewView is the end of the text, cut to the box it is drawn in.
 func previewView(text string, width, height int) string {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	if len(lines) > height {
@@ -295,37 +551,53 @@ func previewView(text string, width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-// pick2 is the prototype picker: the sessions rung only, drawn by this
-// process rather than by fzf.
+// pick2 is the prototype picker, drawn by this process rather than by fzf.
 func pick2() error {
+	start, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	_, ident := walked(context.Background(), dialDeck(), home)
+	repos, ident := walked(context.Background(), dialDeck(), home)
 	live, err := sessions()
 	if err != nil {
 		return err
 	}
-	list := liveRows("", live, ident)
-	start := -1
+
+	m := newPickModel(live, repos, ident)
+	m.push(rung{view: viewSessions})
 	if held := lastHeld(live); held != nil {
-		start = named(list, held.Name)
+		m.top().cursor = max(named(rowsOf(m.top()), held.Name), 0)
+	} else if at := filepath.Clean(start); under(home, at) {
+		m.push(rung{view: viewSessions, dir: at, name: placeName(at, ident)})
+		m.top().cursor = len(m.top().hits) - 1
 	}
 
-	final, err := tea.NewProgram(newPickModel(list, start), tea.WithAltScreen()).Run()
+	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if err != nil {
 		return err
 	}
-	m := final.(pickModel)
-	if m.chosen == nil {
+	res := final.(*pickModel).result
+	if res.name == "" {
 		return errCancelled
 	}
-	if m.take {
-		if err := detachClients(m.chosen.session); err != nil {
+	if res.take {
+		if err := detachClients(res.name); err != nil {
 			return err
 		}
 	}
-	recordLast(m.chosen.session)
-	return attach(m.chosen.session, "")
+	recordLast(res.name)
+	return attach(res.name, res.dir)
+}
+
+// rowsOf is l's rows in list order.
+func rowsOf(l *level) []row {
+	out := make([]row, len(l.items))
+	for i, it := range l.items {
+		out[i] = it.row
+	}
+	return out
 }
