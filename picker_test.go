@@ -374,3 +374,18 @@ func TestADirectoryPreviewsAsItsListing(t *testing.T) {
 		t.Errorf("listing %q", lines)
 	}
 }
+
+// No line of the screen is wider than the terminal, whatever the layout: a
+// line past the frame wraps and pushes everything under it down.
+func TestNoLineOverflowsTheTerminal(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	m.setPreview(strings.Repeat("x", 500) + "\n")
+	for _, size := range [][2]int{{40, 10}, {79, 30}, {100, 40}, {200, 50}} {
+		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		for i, l := range strings.Split(m.View().Content, "\n") {
+			if w := ansi.StringWidth(l); w > size[0] {
+				t.Errorf("%dx%d: line %d is %d wide", size[0], size[1], i, w)
+			}
+		}
+	}
+}

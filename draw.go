@@ -204,6 +204,9 @@ func (m *pickModel) info(width int) string {
 // the rows.
 func (m *pickModel) listView(width, height int) []string {
 	head := []string{m.query.View(), m.info(width), m.header()}
+	for i := range head {
+		head[i] = fit(head[i], width)
+	}
 	rows := max(height-len(head), 1)
 	body := m.rowsView(width-1, rows)
 	bar := scrollbar(len(m.top().lines), rows, m.top().offset)
