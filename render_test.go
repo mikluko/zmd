@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -33,18 +32,6 @@ func scene(t *testing.T) (root string, found []Session) {
 		{Name: "loose", Clients: "0", Dir: t.TempDir()},
 		{Name: "tree", Clients: "0", Dir: tree},
 	}
-}
-
-// find returns the row standing for dir.
-func find(t *testing.T, rows []row, dir string) row {
-	t.Helper()
-	for _, r := range rows {
-		if filepath.Clean(r.dir) == filepath.Clean(dir) {
-			return r
-		}
-	}
-	t.Fatalf("no row for %q", dir)
-	return row{}
 }
 
 // One cell, whatever stands in the directory: filled where a client is
@@ -121,16 +108,6 @@ func visible(s string) string {
 		}
 		s = s[:i] + s[i+j+1:]
 	}
-}
-
-// has reports whether any row stands in dir.
-func has(rows []row, dir string) bool {
-	for _, r := range rows {
-		if r.dir != "" && filepath.Clean(r.dir) == filepath.Clean(dir) {
-			return true
-		}
-	}
-	return false
 }
 
 // A prefix is not a path: `/a/bc` starts with `/a/b` and stands nowhere
@@ -372,55 +349,6 @@ func TestOwnerNameReadsBothRemoteForms(t *testing.T) {
 	}
 }
 
-// Enter does something on every row, so it is advertised on every row. A key
-// that would do nothing is not: nothing to kill where nothing is running, and
-// no take where nobody else holds it.
-func TestHintsOfferOnlyWhatTheKeyWouldDo(t *testing.T) {
-	for _, c := range []struct {
-		state    string
-		want     []string
-		wantNone []string
-	}{
-		{"r", []string{"⏎ start", "⌥⏎ new"}, []string{"⌦ kill", "take", "⇥ mark"}},
-		{"s", []string{"⏎ attach", "⌦ kill", "⇥ mark"}, []string{"take"}},
-		{"sh", []string{"⏎ take", "⌦ kill"}, []string{"⏎ attach"}},
-		{"m", []string{"⏎ in", "⌦ kill"}, []string{"⌃x"}},
-		{"mh", []string{"⏎ in", "⌦ kill"}, []string{"⌃x"}},
-	} {
-		got := hints(c.state)
-		for _, want := range c.want {
-			if !strings.Contains(got, want) {
-				t.Errorf("%s: %q does not offer %q", c.state, got, want)
-			}
-		}
-		for _, none := range c.wantNone {
-			if strings.Contains(got, none) {
-				t.Errorf("%s: %q offers %q, which would do nothing", c.state, got, none)
-			}
-		}
-	}
-}
-
-// The letters the hint line branches on.
-func TestRowStateSaysWhatIsRunningAndWhoHasIt(t *testing.T) {
-	for _, c := range []struct {
-		what string
-		r    row
-		want string
-	}{
-		{"a place with nothing running", row{}, "r"},
-		{"a session nobody else is in", row{session: "a"}, "s"},
-		{"a session another terminal has", row{session: "a", held: true}, "sh"},
-		{"a checkout holding two", row{count: 2}, "m"},
-		{"a checkout holding one another terminal has",
-			row{count: 1, found: []Session{{Clients: "1"}}}, "mh"},
-	} {
-		if got := c.r.state(); got != c.want {
-			t.Errorf("%s: state = %q, want %q", c.what, got, c.want)
-		}
-	}
-}
-
 // go-git refuses a repository whose format version carries an extension it
 // does not implement, and git sets `worktreeconfig` on exactly the ones
 // worktrees have been cut from. The config file is read instead.
@@ -449,26 +377,6 @@ func TestIdentityFallsPastOrigin(t *testing.T) {
 	}
 	if got := identity(filepath.Join(t.TempDir(), "nothing")); got != "" {
 		t.Errorf("a directory with no config gave %q", got)
-	}
-}
-
-// The reason to read a list of 114 rather than type into it is to find what
-// is running, so what is running leads.
-func TestRepoRowsLeadWithWhatIsAlive(t *testing.T) {
-	root := t.TempDir()
-	quiet := repoAt(t, filepath.Join(root, "aaa"))
-	busy := repoAt(t, filepath.Join(root, "zzz"))
-	live := []Session{{Name: "one", Dir: busy}}
-
-	got := repoRows(live, []string{quiet, busy}, nil)
-	if len(got) != 2 || got[0].dir != busy {
-		t.Fatalf("led with %q, want the one holding a session", got[0].dir)
-	}
-	if got[0].count != 1 || got[1].count != 0 {
-		t.Errorf("counts %d / %d", got[0].count, got[1].count)
-	}
-	if cells := []rune(visible(got[0].status)); cells[1] != '1' {
-		t.Errorf("a repository holding one rendered %q", visible(got[0].status))
 	}
 }
 
@@ -516,102 +424,5 @@ func TestShortIDIsEightHexCharacters(t *testing.T) {
 	}
 	if len(seen) < 450 {
 		t.Errorf("500 draws gave %d distinct ids", len(seen))
-	}
-}
-
-// A rung narrowed to one place ends with the offer of another session there.
-// Without it a pane standing somewhere new has no way to say so: every other
-// row belongs to a session that is already running.
-func TestANarrowedSessionsRungOffersOneMore(t *testing.T) {
-	live := []Session{
-		{Name: "here", Clients: "0", Dir: "/a"},
-		{Name: "elsewhere", Clients: "0", Dir: "/b"},
-	}
-
-	narrowed := liveRows("/a", live, nil)
-	if len(narrowed) != 2 {
-		t.Fatalf("narrowed to /a gave %d rows, want the session and the offer", len(narrowed))
-	}
-	if has(narrowed, "/b") {
-		t.Error("narrowing to /a kept a session standing in /b")
-	}
-	last := narrowed[len(narrowed)-1]
-	if last.cells[0] != newSession || last.dir != "/a" || last.session != "" {
-		t.Errorf("the last row is %q / %q / %q", last.cells[0], last.dir, last.session)
-	}
-	// Enter on it starts one rather than attaching, which is what `r` says.
-	if got := last.state(); got != "r" {
-		t.Errorf("the offer reads as %q, want r", got)
-	}
-
-	// Every session there is, with nowhere in particular: no offer, because
-	// there is no place for it to mean.
-	all := liveRows("", live, nil)
-	if len(all) != 2 {
-		t.Fatalf("unnarrowed gave %d rows, want one per session", len(all))
-	}
-	for _, r := range all {
-		if r.cells[0] == newSession {
-			t.Error("the unnarrowed rung offered a session with no place to start it in")
-		}
-	}
-}
-
-// A session row says what it is, what git calls where it is, and where that
-// is. The middle earns its column only where it differs from the path:
-// `mikluko/workspace-uptime` stands at `~/Forge/uptime-com`, which the name
-// does not give up.
-func TestWhereCellsDoNotSayThePathTwice(t *testing.T) {
-	root := t.TempDir()
-	repo := repoAt(t, filepath.Join(root, "checkout"))
-	ident := map[string]string{repo: "acme/api"}
-
-	got := whereCells("harbor-41", repo, ident)
-	if got[1] != "acme/api" || got[2] != shorten(repo) {
-		t.Errorf("a checkout gave %q / %q", got[1], got[2])
-	}
-
-	// Home names itself, so the middle would only repeat the path.
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home directory")
-	}
-	got = whereCells(newSession, home, nil)
-	if got[1] != "" {
-		t.Errorf("home gave %q in the middle, want it left blank", got[1])
-	}
-	if got[2] != "~" {
-		t.Errorf("home gave %q as the path", got[2])
-	}
-}
-
-// Narrowing reaches downwards: a directory holds the work under it as much as
-// the work in it, and a worktree is below the repository it was cut from. A
-// rung that stopped at an exact match would disagree with the count on the
-// repos rung, which already reaches down.
-func TestANarrowedSessionsRungReachesDownwards(t *testing.T) {
-	live := []Session{
-		{Name: "at-the-root", Clients: "0", Dir: "/a"},
-		{Name: "in-a-worktree", Clients: "0", Dir: "/a/.claude/worktrees/a-fix"},
-		{Name: "deeper-still", Clients: "0", Dir: "/a/b/c"},
-		{Name: "a-prefix-not-a-path", Clients: "0", Dir: "/ab"},
-		{Name: "elsewhere", Clients: "0", Dir: "/b"},
-	}
-
-	got := liveRows("/a", live, nil)
-	var names []string
-	for _, r := range got {
-		if r.session != "" {
-			names = append(names, r.session)
-		}
-	}
-	slices.Sort(names)
-	if want := "at-the-root,deeper-still,in-a-worktree"; strings.Join(names, ",") != want {
-		t.Errorf("narrowed to /a gave %q, want %q", strings.Join(names, ","), want)
-	}
-	// The offer is for the place itself, not for anywhere below it.
-	last := got[len(got)-1]
-	if last.cells[0] != newSession || last.dir != "/a" {
-		t.Errorf("the offer is %q in %q", last.cells[0], last.dir)
 	}
 }

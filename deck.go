@@ -126,15 +126,20 @@ func (d *deck) walk() {
 	}
 }
 
-// watchSessions announces a change in what is running.
+// watchSessions announces a change in what is running, and credits a visit to
+// wherever a session has moved to.
 //
 // The names and their clients are what a picker draws, so a change in either
-// is a reason to redraw and nothing else is.
+// is a reason to redraw and nothing else is. A move is a session appearing,
+// or its shell changing directory: zmx follows the `cd` and `zmx list` says
+// where it went, which is how places nobody started a session in get learned.
 func (d *deck) watchSessions(ctx context.Context) {
 	var was string
+	where := map[string]string{}
 	for {
 		live, err := sessions()
 		if err == nil {
+			where = creditMoves(where, live)
 			now := ""
 			for _, s := range live {
 				now += s.Name + ":" + s.Clients + ":" + s.Title + "\n"
@@ -216,4 +221,22 @@ func serve(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// creditMoves credits a visit to each place a session has moved to since
+// where was taken, and returns where every session now is.
+func creditMoves(where map[string]string, live []Session) map[string]string {
+	now := map[string]string{}
+	var moved []string
+	for _, s := range live {
+		if s.Dir == "" {
+			continue
+		}
+		now[s.Name] = s.Dir
+		if where[s.Name] != s.Dir {
+			moved = append(moved, placeOf(s.Dir))
+		}
+	}
+	recordVisits(moved, time.Now())
+	return now
 }

@@ -9,44 +9,34 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 )
 
-// pickItem is a row of the list with what the matcher reads.
-type pickItem struct {
-	row  row
-	text string // the aligned cells, plain, which the query is matched against
-}
-
-// hit is one item that survived the query, and where the query landed in it.
-type hit struct {
-	item  int
-	score int
+// line is one line of the list as drawn: a place's own row, or one of the
+// rows it expands into, and where the query landed in it.
+type line struct {
+	place int // index into the pane's places
+	kid   int // index into that place's kids, or -1 for the place itself
 	pos   []int
 }
 
-// level is one rung of the stack with everything the view of it holds, so a
-// pop lands back where the push left.
-type level struct {
-	rung   rung
-	items  []pickItem
-	hits   []hit
-	cursor int
-	offset int
-	query  string
-	marked map[string]bool // by rowKey, so a mark survives a refilter
-}
-
-// rowKey is what identifies a row across rebuilds of its rung: the session it
-// stands for, or else its directory.
-func rowKey(r row) string {
-	if r.session != "" {
-		return "s:" + r.session
-	}
-	return "d:" + r.dir
+// pane is one view with everything the picker holds of it, so switching away
+// and back lands where it was left.
+type pane struct {
+	mode    mode
+	places  []place
+	text    []string   // each place's aligned cells, plain, which the query is matched against
+	kidText [][]string // the same for each place's kids
+	lines   []line
+	open    map[string]bool // expanded places, by directory
+	marked  map[string]bool // by lineKey, so a mark survives a refilter
+	cursor  int
+	offset  int
+	query   string
 }
 
 // previewMsg carries a preview, tagged with the cursor move it was fetched for
@@ -65,9 +55,10 @@ type killedMsg struct {
 // outcome is what the picker was left with: a session to attach, and where to
 // start it when it is new. Empty means leave.
 type outcome struct {
-	name string
-	dir  string
-	take bool // detach the other terminal's client first
+	name  string
+	dir   string
+	place string // the directory chosen, credited as a visit
+	take  bool   // detach the other terminal's client first
 }
 
 type pickModel struct {
@@ -75,8 +66,12 @@ type pickModel struct {
 	held  *Session // what escape leaves for, nil where there is nothing to go back to
 	repos []string
 	ident map[string]string
+	start string
+	seen  visits
+	now   time.Time
 
-	stack []*level
+	panes [2]*pane
+	mode  mode
 	query textinput.Model
 	match *matcher
 
@@ -91,123 +86,198 @@ type pickModel struct {
 	result outcome
 }
 
-func newPickModel(live []Session, repos []string, ident map[string]string) *pickModel {
+func newPickModel(live []Session, repos []string, ident map[string]string, start string, seen visits, open mode) *pickModel {
 	q := textinput.New()
-	q.PromptStyle = promptStyle
-	q.TextStyle = inputStyle
+	styles := textinput.DefaultDarkStyles()
+	styles.Focused.Prompt = promptStyle
+	styles.Focused.Text = inputStyle
+	q.SetStyles(styles)
 	q.Focus()
-	return &pickModel{
+	m := &pickModel{
 		live: live, held: lastHeld(live), repos: repos, ident: ident,
-		query: q, match: newMatcher(), preview: viewport.New(0, 0),
+		start: start, seen: seen, now: time.Now(),
+		query: q, match: newMatcher(), preview: viewport.New(),
 	}
-}
-
-func (m *pickModel) top() *level { return m.stack[len(m.stack)-1] }
-
-// push puts a rung on the stack, keeping the query typed on the one below.
-func (m *pickModel) push(r rung) {
-	if len(m.stack) > 0 {
-		m.top().query = m.query.Value()
+	for _, mo := range []mode{modeRepos, modeDirs} {
+		m.panes[mo] = &pane{mode: mo, open: map[string]bool{}, marked: map[string]bool{}}
+		m.build(m.panes[mo])
 	}
-	l := &level{rung: r, marked: map[string]bool{}}
-	m.stack = append(m.stack, l)
-	m.rebuild(l)
-	m.query.SetValue("")
-	m.query.Prompt = r.prompt() + "> "
+	m.show(open)
+	return m
 }
 
-// pop drops the top rung.
-func (m *pickModel) pop() {
-	m.truncate(len(m.stack) - 1)
-}
+func (m *pickModel) top() *pane { return m.panes[m.mode] }
 
-// truncate cuts the stack to n rungs and restores the new top as it was left.
-func (m *pickModel) truncate(n int) {
-	m.stack = m.stack[:n]
-	l := m.top()
-	m.query.SetValue(l.query)
+// show makes mo the view on screen, with the query it was left with.
+func (m *pickModel) show(mo mode) {
+	m.top().query = m.query.Value()
+	m.mode = mo
+	m.query.SetValue(m.top().query)
 	m.query.CursorEnd()
-	m.query.Prompt = l.rung.prompt() + "> "
+	m.query.Prompt = mo.String() + "> "
 }
 
-// toRepos jumps to the repositories: back to them where they are already on
-// the stack, pushed above the ground floor where they are not.
-func (m *pickModel) toRepos() {
-	for i, l := range m.stack {
-		if l.rung.view == viewRepos {
-			m.top().query = m.query.Value()
-			m.truncate(i + 1)
+// lineKey is what identifies a line across rebuilds: the place it is, the
+// session it stands for, or the directory it offers to start in.
+func lineKey(p *pane, ln line) string {
+	pl := p.places[ln.place]
+	if ln.kid < 0 {
+		return "p:" + pl.row.dir
+	}
+	r := pl.kids[ln.kid]
+	if r.session != "" {
+		return "s:" + r.session
+	}
+	return "o:" + r.dir + ":" + r.cells[0]
+}
+
+// build reads p's places afresh from what is running, keeping the cursor on
+// the line it stood on, or at the same height where that line is gone.
+func (m *pickModel) build(p *pane) {
+	keep := ""
+	if p.cursor < len(p.lines) {
+		keep = lineKey(p, p.lines[p.cursor])
+	}
+	if p.mode == modeDirs {
+		p.places = dirPlaces(m.live, m.repos, m.start, m.seen, m.now)
+	} else {
+		p.places = repoPlaces(m.live, m.repos, m.ident, m.seen, m.now)
+	}
+
+	cells := make([][]string, len(p.places))
+	var kidCells [][]string
+	for i, pl := range p.places {
+		cells[i] = pl.row.cells
+		for _, k := range pl.kids {
+			kidCells = append(kidCells, k.cells)
+		}
+	}
+	p.text = align(cells)
+	flat := align(kidCells)
+	p.kidText = make([][]string, len(p.places))
+	n := 0
+	for i, pl := range p.places {
+		p.kidText[i] = flat[n : n+len(pl.kids)]
+		n += len(pl.kids)
+	}
+
+	present := map[string]bool{}
+	for i, pl := range p.places {
+		present[lineKey(p, line{place: i, kid: -1})] = true
+		for k := range pl.kids {
+			present[lineKey(p, line{place: i, kid: k})] = true
+		}
+	}
+	for k := range p.marked {
+		if !present[k] {
+			delete(p.marked, k)
+		}
+	}
+
+	cursor := p.cursor
+	m.refilter(p)
+	p.cursor = min(cursor, max(len(p.lines)-1, 0))
+	m.seek(p, keep)
+}
+
+// seek puts p's cursor on the line with key, where there is one.
+func (m *pickModel) seek(p *pane, key string) {
+	for i, ln := range p.lines {
+		if key != "" && lineKey(p, ln) == key {
+			p.cursor = i
 			return
 		}
 	}
-	m.top().query = m.query.Value()
-	m.truncate(1)
-	m.push(rung{view: viewRepos})
 }
 
-// rebuild reads l's rows afresh from what is running, keeping the cursor on
-// the row it stood on, or at the same height where that row is gone.
-func (m *pickModel) rebuild(l *level) {
-	var keep string
-	if l.cursor < len(l.hits) {
-		keep = rowKey(l.items[l.hits[l.cursor].item].row)
-	}
-	list := rows(l.rung, m.live, m.repos, m.ident)
-	cells := make([][]string, len(list))
-	for i, r := range list {
-		cells[i] = r.cells
-	}
-	display := align(cells)
-	l.items = make([]pickItem, len(list))
-	present := map[string]bool{}
-	for i, r := range list {
-		l.items[i] = pickItem{row: r, text: display[i]}
-		present[rowKey(r)] = true
-	}
-	for k := range l.marked {
-		if !present[k] {
-			delete(l.marked, k)
+// refilter recomputes p's lines for its query.
+//
+// With nothing typed every place is listed, and an expanded one is followed by
+// what it holds. A query is matched against each place, and against the label
+// of each session or worktree it holds: a place matching only itself is listed
+// closed, and one holding a match is listed open on its matches alone, so a
+// match is never shown without the place it stands in. Places are ranked by
+// their best match, and the matches within one by their own.
+func (m *pickModel) refilter(p *pane) {
+	p.lines = p.lines[:0]
+	if p.query == "" {
+		for i, pl := range p.places {
+			p.lines = append(p.lines, line{place: i, kid: -1})
+			if p.open[pl.row.dir] {
+				for k := range pl.kids {
+					p.lines = append(p.lines, line{place: i, kid: k})
+				}
+			}
 		}
+		return
 	}
-	cursor := l.cursor
-	m.refilter(l, l.query)
-	l.cursor = min(cursor, max(len(l.hits)-1, 0))
-	for i, h := range l.hits {
-		if keep != "" && rowKey(l.items[h.item].row) == keep {
-			l.cursor = i
+
+	type scored struct {
+		line
+		score int
+	}
+	type group struct {
+		best  int
+		lines []scored
+	}
+	var groups []group
+	for i, pl := range p.places {
+		g := group{best: -1}
+		head := scored{line: line{place: i, kid: -1}}
+		if s, pos, ok := m.match.match(p.text[i], p.query); ok {
+			head.score, head.pos, g.best = s, pos, s
+		}
+		var kids []scored
+		for k, kid := range pl.kids {
+			if kid.cells[0] == newSession {
+				continue
+			}
+			if s, pos, ok := m.match.match(kid.cells[0], p.query); ok {
+				kids = append(kids, scored{line: line{place: i, kid: k, pos: pos}, score: s})
+				g.best = max(g.best, s)
+			}
+		}
+		if g.best < 0 {
+			continue
+		}
+		sort.SliceStable(kids, func(a, b int) bool { return kids[a].score > kids[b].score })
+		g.lines = append([]scored{head}, kids...)
+		groups = append(groups, g)
+	}
+	sort.SliceStable(groups, func(a, b int) bool { return groups[a].best > groups[b].best })
+	for _, g := range groups {
+		for _, s := range g.lines {
+			p.lines = append(p.lines, s.line)
 		}
 	}
 }
 
-// refilter recomputes l's hits for query, best first and in list order among
-// equals, with the cursor back at the top.
-func (m *pickModel) refilter(l *level, query string) {
-	l.query = query
-	l.hits = l.hits[:0]
-	for i, it := range l.items {
-		if score, pos, ok := m.match.match(it.text, query); ok {
-			l.hits = append(l.hits, hit{item: i, score: score, pos: pos})
-		}
+// current is the line under the cursor, the place it belongs to, and the row
+// it draws; nil where the list is empty.
+func (m *pickModel) current() (*line, *place, *row) {
+	p := m.top()
+	if p.cursor < 0 || p.cursor >= len(p.lines) {
+		return nil, nil, nil
 	}
-	if query != "" {
-		sort.SliceStable(l.hits, func(i, j int) bool { return l.hits[i].score > l.hits[j].score })
+	ln := &p.lines[p.cursor]
+	pl := &p.places[ln.place]
+	if ln.kid < 0 {
+		return ln, pl, &pl.row
 	}
-	l.cursor, l.offset = 0, 0
+	return ln, pl, &pl.kids[ln.kid]
 }
 
-func (m *pickModel) current() *row {
-	l := m.top()
-	if l.cursor < 0 || l.cursor >= len(l.hits) {
-		return nil
-	}
-	return &l.items[l.hits[l.cursor].item].row
+// expanded reports whether the place at line i is followed by what it holds.
+func (p *pane) expanded(i int) bool {
+	return i+1 < len(p.lines) && p.lines[i+1].kid >= 0 && p.lines[i+1].place == p.lines[i].place
 }
 
 // fetchPreview supersedes whatever preview is in flight with one for the row
 // under the cursor.
 func (m *pickModel) fetchPreview() tea.Cmd {
 	m.seq++
-	return loadPreview(m.current(), m.seq)
+	_, _, r := m.current()
+	return loadPreview(r, m.seq)
 }
 
 // setPreview shows text, at its end where the row follows and at its start
@@ -225,7 +295,8 @@ func (m *pickModel) setPreview(text string) {
 func (m *pickModel) sizePreview() {
 	_, w, h := m.previewBox()
 	bottom := m.preview.AtBottom()
-	m.preview.Width, m.preview.Height = w, h
+	m.preview.SetWidth(w)
+	m.preview.SetHeight(h)
 	if bottom && m.follows() {
 		m.preview.GotoBottom()
 	}
@@ -234,7 +305,7 @@ func (m *pickModel) sizePreview() {
 // follows reports whether the preview anchors at its end: a session's
 // scrollback is read from where it stopped, a place's history from its newest.
 func (m *pickModel) follows() bool {
-	r := m.current()
+	_, _, r := m.current()
 	return r != nil && r.session != ""
 }
 
@@ -289,12 +360,12 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.live = msg.live
 		m.held = lastHeld(m.live)
-		for _, l := range m.stack {
-			m.rebuild(l)
+		for _, p := range m.panes {
+			m.build(p)
 		}
 		return m, m.fetchPreview()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		m.status = ""
 		if m.asking != "" {
 			m.asking = ""
@@ -308,9 +379,8 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *pickModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	l := m.top()
-	typed := m.query.Value() != ""
+func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	p := m.top()
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -319,20 +389,10 @@ func (m *pickModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.result = outcome{name: m.held.Name}
 		}
 		return m, tea.Quit
-	case "left", "backspace":
-		if typed {
-			break
-		}
-		if len(m.stack) > 1 {
-			m.pop()
-			return m, m.fetchPreview()
-		}
-		return m, nil
-	case "right":
-		if typed {
-			break
-		}
-		return m.descend()
+	case "tab":
+		m.show(1 - m.mode)
+		saveMode(m.mode)
+		return m, m.fetchPreview()
 	case "alt+up":
 		m.preview.ScrollUp(1)
 		return m, nil
@@ -349,24 +409,20 @@ func (m *pickModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.move(-1)
 	case "down", "ctrl+n":
 		return m.move(1)
-	case "ctrl+g":
-		m.toRepos()
-		return m, m.fetchPreview()
-	case "tab":
-		if r := m.current(); r != nil && r.dir != "" {
-			k := rowKey(*r)
-			l.marked[k] = !l.marked[k]
-			if !l.marked[k] {
-				delete(l.marked, k)
+	case "enter":
+		return m.enter()
+	case "shift+enter":
+		if ln, _, r := m.current(); ln != nil && (ln.kid < 0 || r.session != "") {
+			k := lineKey(p, *ln)
+			p.marked[k] = !p.marked[k]
+			if !p.marked[k] {
+				delete(p.marked, k)
 			}
 		}
 		return m.move(1)
-	case "enter":
-		l.marked = map[string]bool{}
-		return m.descend()
 	case "alt+enter":
-		if r := m.current(); r != nil && r.dir != "" {
-			m.result = outcome{name: sessionName(m.live), dir: r.dir}
+		if _, _, r := m.current(); r != nil && r.dir != "" {
+			m.result = outcome{name: sessionName(m.live), dir: r.dir, place: r.dir}
 			return m, tea.Quit
 		}
 		return m, nil
@@ -376,7 +432,7 @@ func (m *pickModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		kill := func() (tea.Model, tea.Cmd) {
-			l.marked = map[string]bool{}
+			p.marked = map[string]bool{}
 			return m, func() tea.Msg {
 				err := killSessions(names)
 				live, _ := sessions()
@@ -394,79 +450,97 @@ func (m *pickModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.query, cmd = m.query.Update(msg)
 	if m.query.Value() != before {
-		m.refilter(l, m.query.Value())
+		p.query = m.query.Value()
+		m.refilter(p)
+		p.cursor, p.offset = 0, 0
 		return m, tea.Batch(cmd, m.fetchPreview())
 	}
 	return m, cmd
 }
 
-// killTargets is every session the marked rows stand for, or the row under
-// the cursor where nothing is marked.
+// enter opens or closes the place under the cursor, attaches the session, or
+// starts one where the row offers to.
+//
+// Opening a place that a query found clears the query, since what it holds is
+// what was being looked for, and leaves the cursor on the place, open.
+func (m *pickModel) enter() (tea.Model, tea.Cmd) {
+	p := m.top()
+	ln, pl, r := m.current()
+	if ln == nil {
+		return m, nil
+	}
+	p.marked = map[string]bool{}
+	if ln.kid < 0 {
+		key := lineKey(p, *ln)
+		if p.query != "" {
+			p.query = ""
+			m.query.SetValue("")
+			p.open[pl.row.dir] = true
+		} else {
+			p.open[pl.row.dir] = !p.open[pl.row.dir]
+		}
+		m.refilter(p)
+		m.seek(p, key)
+		return m, m.fetchPreview()
+	}
+	if r.session == "" {
+		m.result = outcome{name: sessionName(m.live), dir: r.dir, place: r.dir}
+		return m, tea.Quit
+	}
+	if r.held {
+		name, dir := r.session, r.dir
+		m.asking = takes(r.cells[0])
+		m.onYes = func() (tea.Model, tea.Cmd) {
+			m.result = outcome{name: name, place: dir, take: true}
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	m.result = outcome{name: r.session, place: r.dir}
+	return m, tea.Quit
+}
+
+// killTargets is every session the marked lines stand for, or the line under
+// the cursor where nothing is marked: a place stands for everything it holds.
 func (m *pickModel) killTargets() []string {
-	l := m.top()
+	p := m.top()
 	var picked []row
-	for _, it := range l.items {
-		if l.marked[rowKey(it.row)] {
-			picked = append(picked, it.row)
+	for i, pl := range p.places {
+		if p.marked[lineKey(p, line{place: i, kid: -1})] {
+			picked = append(picked, pl.row)
+			continue
+		}
+		for k, kid := range pl.kids {
+			if p.marked[lineKey(p, line{place: i, kid: k})] {
+				picked = append(picked, kid)
+			}
 		}
 	}
 	if len(picked) == 0 {
-		if r := m.current(); r != nil {
+		if _, _, r := m.current(); r != nil {
 			picked = append(picked, *r)
 		}
 	}
 	seen := map[string]bool{}
 	var names []string
 	for _, r := range picked {
-		for _, name := range killable(r, m.live) {
-			if !seen[name] {
-				seen[name] = true
-				names = append(names, name)
+		for _, s := range r.found {
+			if !seen[s.Name] {
+				seen[s.Name] = true
+				names = append(names, s.Name)
 			}
 		}
 	}
 	return names
 }
 
-// descend is enter and right: attach, take, start, or push the rung below.
-func (m *pickModel) descend() (tea.Model, tea.Cmd) {
-	r := m.current()
-	if r == nil || r.dir == "" {
-		return m, nil
-	}
-	here := m.top().rung
-	switch {
-	case here.view == viewSessions && r.session != "":
-		if r.held {
-			name := r.session
-			m.asking = takes(r.cells[0])
-			m.onYes = func() (tea.Model, tea.Cmd) {
-				m.result = outcome{name: name, take: true}
-				return m, tea.Quit
-			}
-			return m, nil
-		}
-		m.result = outcome{name: r.session}
-		return m, tea.Quit
-	case here.view == viewRepos && r.trees > 0:
-		m.push(rung{view: viewCheckouts, dir: r.dir, name: r.cells[0]})
-		return m, m.fetchPreview()
-	case here.view != viewSessions && r.count > 0:
-		m.push(rung{view: viewSessions, dir: r.dir, name: r.cells[0]})
-		return m, m.fetchPreview()
-	default:
-		m.result = outcome{name: sessionName(m.live), dir: r.dir}
-		return m, tea.Quit
-	}
-}
-
 func (m *pickModel) move(delta int) (tea.Model, tea.Cmd) {
-	l := m.top()
-	next := l.cursor + delta
-	if next < 0 || next >= len(l.hits) {
+	p := m.top()
+	next := p.cursor + delta
+	if next < 0 || next >= len(p.lines) {
 		return m, nil
 	}
-	l.cursor = next
+	p.cursor = next
 	return m, m.fetchPreview()
 }
 
@@ -495,6 +569,73 @@ func previewLayout(cols, rows int) layout {
 	}
 }
 
+// modeFile is where the view last switched to is kept.
+func modeFile() string {
+	dir := stateDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "view")
+}
+
+// loadMode is the view last switched to, the repositories where none was.
+func loadMode() mode {
+	if readLast(modeFile()) == modeDirs.String() {
+		return modeDirs
+	}
+	return modeRepos
+}
+
+func saveMode(mo mode) { writeLast(modeFile(), mo.String()) }
+
+// opening puts the cursor where the picker is opened for: on the session the
+// pane last held, its place open around it; or, for a pane that has held
+// nothing, on the offer of a session where the pane stands.
+func (m *pickModel) opening() {
+	p := m.top()
+	want := ""
+	var dir string
+	switch {
+	case m.held != nil:
+		want = "s:" + m.held.Name
+	case m.start != "":
+		dir = m.start
+		if p.mode == modeRepos {
+			dir = placeOf(m.start)
+		}
+	}
+	for i, pl := range p.places {
+		for k, kid := range pl.kids {
+			hit := want != "" && lineKey(p, line{place: i, kid: k}) == want
+			if want == "" && dir != "" && pl.row.dir == filepath.Clean(dir) && kid.cells[0] == newSession {
+				hit = true
+			}
+			if hit {
+				key := lineKey(p, line{place: i, kid: k})
+				p.open[pl.row.dir] = true
+				m.refilter(p)
+				m.seek(p, key)
+				return
+			}
+		}
+	}
+}
+
+// unseen is the place of every session the visits do not know yet, so that
+// a picker run without the daemon still learns where sessions are.
+func unseen(live []Session, seen visits) []string {
+	var out []string
+	for _, s := range live {
+		if s.Dir == "" {
+			continue
+		}
+		if _, ok := seen[placeOf(s.Dir)]; !ok {
+			out = append(out, placeOf(s.Dir))
+		}
+	}
+	return out
+}
+
 // run presents the picker and attaches to what it answers.
 func run() error {
 	start, err := os.Getwd()
@@ -510,21 +651,19 @@ func run() error {
 	if err != nil {
 		return err
 	}
-
-	// The ground floor is every session there is, with the cursor on what the
-	// pane last held, so its peers are around it. A pane that has held
-	// nothing has only where it stands to go on, so it opens one rung in,
-	// narrowed to that, on the offer of a session there.
-	m := newPickModel(live, repos, ident)
-	m.push(rung{view: viewSessions})
-	if m.held != nil {
-		m.top().cursor = max(named(rowsOf(m.top()), m.held.Name), 0)
-	} else if at := filepath.Clean(start); under(home, at) {
-		m.push(rung{view: viewSessions, dir: at, name: placeName(at, ident)})
-		m.top().cursor = len(m.top().hits) - 1
+	seen := loadVisits()
+	if fresh := unseen(live, seen); len(fresh) > 0 {
+		recordVisits(fresh, time.Now())
+		seen = loadVisits()
+	}
+	if !under(home, start) {
+		start = ""
 	}
 
-	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	m := newPickModel(live, repos, ident, start, seen, loadMode())
+	m.opening()
+
+	final, err := tea.NewProgram(m).Run()
 	if err != nil {
 		return err
 	}
@@ -537,16 +676,10 @@ func run() error {
 			return err
 		}
 	}
+	if res.place != "" {
+		recordVisits([]string{placeOf(res.place)}, time.Now())
+	}
 	// Recorded before the exec, since there is no returning from it.
 	recordLast(res.name)
 	return attach(res.name, res.dir)
-}
-
-// rowsOf is l's rows in list order.
-func rowsOf(l *level) []row {
-	out := make([]row, len(l.items))
-	for i, it := range l.items {
-		out[i] = it.row
-	}
-	return out
 }

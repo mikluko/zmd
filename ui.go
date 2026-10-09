@@ -5,17 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 )
-
-// One list of places: the repositories a session can be started in, and the
-// directories sessions are already running in. Typing is the navigation.
-//
-// A session is not a row. It is something a place holds, counted in the
-// status column, and named only where a place holds more than one and has to
-// be asked which.
 
 // The status column stands ahead of the name and is three cells wide,
 // whatever it has to say:
@@ -54,30 +46,6 @@ const (
 	undim    = "\x1b[0m"
 )
 
-// hints is the keys worth advertising for a row in the given state.
-//
-// A key that would do nothing is not offered: nothing to take where nobody
-// else holds it, nothing to kill where nothing is running, and `⏎ start`
-// rather than `⏎ attach` where entering means making one.
-func hints(state string) string {
-	keys := []string{}
-	switch state {
-	case "s":
-		keys = append(keys, "⏎ attach")
-	case "sh":
-		keys = append(keys, "⏎ take")
-	case "m", "mh":
-		keys = append(keys, "⏎ in")
-	default:
-		keys = append(keys, "⏎ start")
-	}
-	keys = append(keys, "⌥⏎ new")
-	if state != "r" {
-		keys = append(keys, "⇥ mark", "⌦ kill")
-	}
-	return strings.Join(keys, "  ")
-}
-
 // row is one line of the list.
 type row struct {
 	dir     string    // the place the row stands for
@@ -85,32 +53,9 @@ type row struct {
 	session string    // the one session to attach to, empty where there is not exactly one
 	count   int       // sessions alive at or below the row
 	trees   int       // worktrees cut from the checkout, where the row is one
-	several bool      // more sessions here than one keystroke can choose between
 	held    bool      // another terminal has that session open
 	status  string    // the fixed cells ahead of the name, which may carry colour
 	cells   []string  // what the line shows, aligned against every other row
-}
-
-// state is what the row is, in the letters the keys branch on: `r` a place
-// with nothing running, `s` a place with one session, `m` a place with
-// several, and `h` appended where another terminal has one of them.
-func (r row) state() string {
-	at := "r"
-	switch {
-	case r.session != "":
-		at = "s"
-	case r.count > 0:
-		at = "m"
-	}
-	if r.held {
-		return at + "h"
-	}
-	for _, s := range r.found {
-		if s.heldElsewhere() {
-			return at + "h"
-		}
-	}
-	return at
 }
 
 // circle renders the sessions in one directory in the one cell they get.
@@ -157,59 +102,12 @@ func status(dir string, found []Session) string {
 	return mark(dir) + circle(found) + " "
 }
 
-// byDir groups sessions by the directory they run in, each group by name.
-//
-// Grouping by directory rather than by name is what makes a session this tool
-// never named, supacode's among them, count against the directory it sits in.
-func byDir(live []Session) map[string][]Session {
-	found := make(map[string][]Session)
-	for _, s := range live {
-		if s.Dir == "" {
-			continue
-		}
-		key := filepath.Clean(s.Dir)
-		found[key] = append(found[key], s)
+// empty is the line a view with nothing to show puts in place of a list.
+func empty(mo mode) string {
+	if mo == modeDirs {
+		return "no directories yet: sessions outside a repository put theirs here"
 	}
-	for key := range found {
-		sort.Slice(found[key], func(i, j int) bool { return found[key][i].Name < found[key][j].Name })
-	}
-	return found
-}
-
-// killable is every session a kill aimed at the row would take.
-func killable(r row, live []Session) []string {
-	if r.session != "" {
-		return []string{r.session}
-	}
-	var names []string
-	for _, s := range live {
-		if r.dir != "" && under(r.dir, s.Dir) {
-			names = append(names, s.Name)
-		}
-	}
-	return names
-}
-
-// named is the row standing for the given session, or -1.
-func named(list []row, name string) int {
-	for i, r := range list {
-		if r.session == name {
-			return i
-		}
-	}
-	return -1
-}
-
-// empty is the line a rung with nothing to show puts in place of a list.
-func empty(r rung) string {
-	switch r.view {
-	case viewRepos:
-		return "no repositories below ~"
-	case viewCheckouts:
-		return "no checkouts here"
-	default:
-		return "nothing running; ⌃g reaches the repositories"
-	}
+	return "no repositories below ~"
 }
 
 // takes is what the selector asks before a session changes hands.

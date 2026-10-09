@@ -1,196 +1,279 @@
 package main
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
-// stackModel is a picker over two repositories, one with a worktree, and a
-// session in each place, opened on the ground floor.
-func stackModel(t *testing.T) (*pickModel, string) {
+// sceneModel is a picker over scene, opened on the given view, with titles on
+// two of the engine's sessions.
+func sceneModel(t *testing.T, open mode) (*pickModel, string) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	root := t.TempDir()
-	api := repoAt(t, filepath.Join(root, "api"))
-	tree := worktreeAt(t, api, "fix", filepath.Join(root, "api-fix"))
-	web := repoAt(t, filepath.Join(root, "web"))
-	live := []Session{
-		{Name: "a", Dir: api, Clients: "0"},
-		{Name: "b", Dir: tree, Clients: "0"},
-		{Name: "c", Dir: web, Clients: "0"},
+	root, live := scene(t)
+	engine, tree, api, _ := sceneDirs(root)
+	for i := range live {
+		switch live[i].Name {
+		case "src.acme.engine":
+			live[i].Title = "retry-bug"
+		case "src.acme.engine+review":
+			live[i].Title = "review-pr"
+		}
 	}
-	m := newPickModel(live, []string{api, tree, web}, map[string]string{})
-	m.push(rung{view: viewSessions})
-	return m, api
+	m := newPickModel(live, []string{engine, tree, api}, map[string]string{}, "", visits{}, open)
+	return m, root
 }
 
-func press(m *pickModel, keys ...tea.KeyMsg) {
+func press(m *pickModel, keys ...tea.KeyPressMsg) {
 	for _, k := range keys {
 		m.Update(k)
 	}
 }
 
 var (
-	keyDown  = tea.KeyMsg{Type: tea.KeyDown}
-	keyRight = tea.KeyMsg{Type: tea.KeyRight}
-	keyLeft  = tea.KeyMsg{Type: tea.KeyLeft}
-	keyBack  = tea.KeyMsg{Type: tea.KeyBackspace}
-	keyEnter = tea.KeyMsg{Type: tea.KeyEnter}
-	keyEsc   = tea.KeyMsg{Type: tea.KeyEsc}
-	keyG     = tea.KeyMsg{Type: tea.KeyCtrlG}
-	keyTab   = tea.KeyMsg{Type: tea.KeyTab}
-	keyDel   = tea.KeyMsg{Type: tea.KeyDelete}
+	keyRight = tea.KeyPressMsg{Code: tea.KeyRight}
+	keyLeft  = tea.KeyPressMsg{Code: tea.KeyLeft}
+	keyBack  = tea.KeyPressMsg{Code: tea.KeyBackspace}
+	keyEnter = tea.KeyPressMsg{Code: tea.KeyEnter}
+	keyMark  = tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift}
+	keyEsc   = tea.KeyPressMsg{Code: tea.KeyEscape}
+	keyTab   = tea.KeyPressMsg{Code: tea.KeyTab}
+	keyDel   = tea.KeyPressMsg{Code: tea.KeyDelete}
 )
 
-func typed(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
-
-func TestPopRestoresCursorAndQuery(t *testing.T) {
-	m, _ := stackModel(t)
-	press(m, keyG, typed("web"))
-	if len(m.top().hits) != 1 {
-		t.Fatalf("query web: %d hits, want 1", len(m.top().hits))
+func typed(s string) []tea.KeyPressMsg {
+	var out []tea.KeyPressMsg
+	for _, r := range s {
+		out = append(out, tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
-	press(m, keyEnter)
-	if got := m.top().rung.view; got != viewSessions || len(m.stack) != 3 {
-		t.Fatalf("after descend: view %v depth %d", got, len(m.stack))
-	}
-	press(m, keyLeft)
-	if got := m.query.Value(); got != "web" {
-		t.Errorf("query after pop = %q, want web", got)
-	}
-	if got := filepath.Base(m.current().dir); got != "web" {
-		t.Errorf("cursor after pop on %q, want web", got)
-	}
+	return out
 }
 
-func TestReposJumpDoesNotGrowStack(t *testing.T) {
-	m, _ := stackModel(t)
-	press(m, keyG)
-	for range 3 {
-		press(m, keyRight, keyG) // into a checkout's sessions, then back to repos
-	}
-	if len(m.stack) != 2 {
-		t.Errorf("depth = %d, want 2", len(m.stack))
-	}
-}
-
-func TestKillKeepsCursorOnSurvivor(t *testing.T) {
-	m, _ := stackModel(t)
-	first := m.current().session
-	press(m, keyDown)
-	on := m.current().session
-	var survivors []Session
-	for _, s := range m.live {
-		if s.Name != first {
-			survivors = append(survivors, s)
+// labels is what the visible lines say, a place by its name and what it
+// holds indented under it.
+func labels(m *pickModel) []string {
+	p := m.top()
+	var out []string
+	for _, ln := range p.lines {
+		pl := p.places[ln.place]
+		if ln.kid < 0 {
+			out = append(out, pl.row.cells[0])
+		} else {
+			out = append(out, "  "+pl.kids[ln.kid].cells[0])
 		}
 	}
-	m.Update(killedMsg{live: survivors})
-	if got := m.current().session; got != on {
-		t.Errorf("cursor on %q after kill, want %q", got, on)
+	return out
+}
+
+func seekLabel(t *testing.T, m *pickModel, label string) {
+	t.Helper()
+	for i, l := range labels(m) {
+		if strings.TrimSpace(l) == label || strings.HasSuffix(l, label) {
+			m.top().cursor = i
+			return
+		}
+	}
+	t.Fatalf("no line %q in %q", label, labels(m))
+}
+
+func TestEnterOpensAndClosesAPlace(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	before := len(m.top().lines)
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	if got := len(m.top().lines); got != before+4 {
+		t.Fatalf("open engine: %d lines, want %d: %q", got, before+4, labels(m))
+	}
+	if !m.top().expanded(m.top().cursor) {
+		t.Error("the cursor left the place it opened")
+	}
+	press(m, keyEnter)
+	if got := len(m.top().lines); got != before {
+		t.Errorf("closed engine: %d lines, want %d", got, before)
 	}
 }
 
+// A session is found by its title, under its place, without its siblings.
+func TestAQueryFindsASessionUnderItsPlace(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	press(m, typed("retry-bug")...)
+	got := labels(m)
+	if len(got) != 2 || !strings.HasSuffix(got[0], "engine") || got[1] != "  retry-bug" {
+		t.Errorf("lines %q, want engine then retry-bug alone", got)
+	}
+}
+
+// A place matching only itself is listed closed, and entering it clears the
+// query and leaves it open under the cursor.
+func TestEnteringAFoundPlaceClearsTheQuery(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	press(m, typed("api")...)
+	got := labels(m)
+	if len(got) != 1 {
+		t.Fatalf("lines %q, want api alone and closed", got)
+	}
+	press(m, keyEnter)
+	if m.query.Value() != "" || m.top().query != "" {
+		t.Errorf("query %q survives entering", m.query.Value())
+	}
+	if !m.top().expanded(m.top().cursor) || !strings.HasSuffix(labels(m)[m.top().cursor], "api") {
+		t.Errorf("cursor on %q, want api open", labels(m)[m.top().cursor])
+	}
+}
+
+// The arrows edit the query and nothing else.
+func TestArrowsOnlyEditTheQuery(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	press(m, typed("eng")...)
+	lines := len(m.top().lines)
+	press(m, keyLeft, keyRight)
+	if m.query.Value() != "eng" || len(m.top().lines) != lines {
+		t.Errorf("after arrows: query %q, %d lines", m.query.Value(), len(m.top().lines))
+	}
+	press(m, keyBack, keyBack, keyBack, keyBack)
+	if m.query.Value() != "" {
+		t.Errorf("backspace leaves %q", m.query.Value())
+	}
+}
+
+// Tab flips the view, each keeping its own query, and the view is remembered.
+func TestTabSwitchesViewAndRemembersIt(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	press(m, typed("eng")...)
+	press(m, keyTab)
+	if m.mode != modeDirs || m.query.Value() != "" {
+		t.Fatalf("after tab: %v, query %q", m.mode, m.query.Value())
+	}
+	if loadMode() != modeDirs {
+		t.Error("the view switched to is not remembered")
+	}
+	press(m, keyTab)
+	if m.query.Value() != "eng" {
+		t.Errorf("repos query %q, want eng back", m.query.Value())
+	}
+}
+
+// Marking a place marks everything it holds for a kill.
 func TestKillTargetsPreferMarks(t *testing.T) {
-	m, _ := stackModel(t)
-	press(m, tea.KeyMsg{Type: tea.KeyTab}, tea.KeyMsg{Type: tea.KeyTab})
-	got := m.killTargets()
-	if len(got) != 2 {
-		t.Errorf("targets = %v, want the two marked", got)
+	m, _ := sceneModel(t, modeRepos)
+	seekLabel(t, m, "engine")
+	press(m, keyMark)
+	if got := m.killTargets(); len(got) != 3 {
+		t.Errorf("targets %v, want engine's three", got)
 	}
 }
 
-func TestEscOnGroundLeavesWithoutAttaching(t *testing.T) {
-	m, _ := stackModel(t)
+func TestEnterAttachesASessionAndStartsAnOffer(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	seekLabel(t, m, "review-pr")
+	if _, cmd := m.Update(keyEnter); cmd == nil || m.result.name != "src.acme.engine+review" {
+		t.Errorf("enter on a session: result %+v", m.result)
+	}
+
+	m, _ = sceneModel(t, modeRepos)
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	seekLabel(t, m, newSession)
+	m.Update(keyEnter)
+	if m.result.dir == "" || !strings.HasPrefix(m.result.name, "zmd.") {
+		t.Errorf("enter on the offer: result %+v", m.result)
+	}
+}
+
+// Escape leaves, from wherever the cursor is.
+func TestEscLeavesWithoutAttaching(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	press(m, typed("eng")...)
 	_, cmd := m.Update(keyEsc)
 	if cmd == nil || m.result.name != "" {
 		t.Errorf("esc with nothing held: cmd %v result %+v", cmd, m.result)
 	}
 }
 
-// A picker that cannot correct what was typed is worse than one that cannot
-// walk, so the walking keys edit the query while there is one.
-func TestWalkingKeysCorrectATypedQuery(t *testing.T) {
-	m, _ := stackModel(t)
-	press(m, keyG, typed("web"), keyLeft, keyRight)
-	if len(m.stack) != 2 || m.query.Value() != "web" {
-		t.Fatalf("left and right under a query: depth %d query %q", len(m.stack), m.query.Value())
-	}
-	press(m, keyBack, keyBack, keyBack)
-	if len(m.stack) != 2 || m.query.Value() != "" {
-		t.Fatalf("backspace under a query: depth %d query %q", len(m.stack), m.query.Value())
-	}
-	press(m, keyBack)
-	if len(m.stack) != 1 {
-		t.Errorf("backspace with nothing typed: depth %d, want 1", len(m.stack))
-	}
-}
-
-// Escape leaves rather than popping: the arrow is what walks the stack.
-func TestEscLeavesFromAnyRung(t *testing.T) {
-	m, _ := stackModel(t)
-	press(m, keyG)
-	_, cmd := m.Update(keyEsc)
-	if cmd == nil || len(m.stack) != 2 {
-		t.Errorf("esc on the repos rung: cmd %v depth %d", cmd, len(m.stack))
-	}
-}
-
-// Enter acts on the row under the cursor, so marks made for a kill do not
-// outlive it.
-func TestEnterClearsMarks(t *testing.T) {
-	m, _ := stackModel(t)
-	press(m, keyG, keyTab, keyEnter)
-	if n := len(m.stack[1].marked); n != 0 {
-		t.Errorf("%d marks survive enter", n)
-	}
-}
-
 // Any answer but yes is no, escape included, and the picker stays up.
 func TestADeclinedKillKeepsThePicker(t *testing.T) {
-	m, _ := stackModel(t)
+	m, _ := sceneModel(t, modeRepos)
+	seekLabel(t, m, "engine")
 	press(m, keyDel)
 	if m.asking == "" {
 		t.Fatal("delete did not ask")
 	}
 	_, cmd := m.Update(keyEsc)
-	if cmd != nil || m.asking != "" || len(m.live) != 3 {
-		t.Errorf("after escape: cmd %v asking %q live %d", cmd, m.asking, len(m.live))
+	if cmd != nil || m.asking != "" {
+		t.Errorf("after escape: cmd %v asking %q", cmd, m.asking)
+	}
+}
+
+// A kill rebuilds every view and keeps the cursor where it was.
+func TestKillKeepsCursorOnSurvivor(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	seekLabel(t, m, "review-pr")
+	var survivors []Session
+	for _, s := range m.live {
+		if s.Name != "src.acme.engine" {
+			survivors = append(survivors, s)
+		}
+	}
+	m.Update(killedMsg{live: survivors})
+	if _, _, r := m.current(); r == nil || r.session != "src.acme.engine+review" {
+		t.Errorf("cursor after kill on %+v", r)
+	}
+}
+
+// A pane that held nothing opens on the offer of a session where it stands,
+// its place open around it.
+func TestOpeningLandsOnTheOfferWhereThePaneStands(t *testing.T) {
+	m, root := sceneModel(t, modeRepos)
+	engine, _, _, _ := sceneDirs(root)
+	m.start = engine
+	m.opening()
+	_, pl, r := m.current()
+	if r == nil || r.cells[0] != newSession || pl.row.dir != engine {
+		t.Errorf("opened on %+v", r)
 	}
 }
 
 // A session's scrollback opens at its end and a place's history at its start.
 func TestPreviewOpensWhereItIsRead(t *testing.T) {
-	m, _ := stackModel(t)
+	m, _ := sceneModel(t, modeRepos)
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 22})
 	long := strings.Repeat("line\n", 100)
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	seekLabel(t, m, "retry-bug")
 	m.Update(previewMsg{seq: m.seq, text: long})
 	if !m.preview.AtBottom() {
-		t.Errorf("a session previews from offset %d, want its end", m.preview.YOffset)
+		t.Errorf("a session previews from offset %d, want its end", m.preview.YOffset())
 	}
-	press(m, keyG)
+	seekLabel(t, m, "engine")
 	m.Update(previewMsg{seq: m.seq, text: long})
 	if !m.preview.AtTop() {
-		t.Errorf("a place previews from offset %d, want its start", m.preview.YOffset)
+		t.Errorf("a place previews from offset %d, want its start", m.preview.YOffset())
 	}
 }
 
 // Scrolling past an end is not banked: the first key back moves the preview.
 func TestScrollPreviewStopsAtTheEnds(t *testing.T) {
-	m, _ := stackModel(t)
+	m, _ := sceneModel(t, modeRepos)
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 22})
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	seekLabel(t, m, "retry-bug")
 	m.Update(previewMsg{seq: m.seq, text: strings.Repeat("line\n", 100)})
-	end := m.preview.YOffset
-	press(m, tea.KeyMsg{Type: tea.KeyDown, Alt: true})
-	if m.preview.YOffset != end {
-		t.Errorf("scrolled past the end of a session's scrollback: %d, want %d", m.preview.YOffset, end)
+	end := m.preview.YOffset()
+	press(m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModAlt})
+	if m.preview.YOffset() != end {
+		t.Errorf("scrolled past the end: %d, want %d", m.preview.YOffset(), end)
 	}
-	press(m, tea.KeyMsg{Type: tea.KeyUp, Alt: true}, tea.KeyMsg{Type: tea.KeyUp, Alt: true})
-	if m.preview.YOffset != end-2 {
-		t.Errorf("two lines up: %d, want %d", m.preview.YOffset, end-2)
+	press(m, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModAlt}, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModAlt})
+	if m.preview.YOffset() != end-2 {
+		t.Errorf("two lines up: %d, want %d", m.preview.YOffset(), end-2)
 	}
 }
 
@@ -230,7 +313,7 @@ func TestScrollbar(t *testing.T) {
 // The split is decided on every draw from the terminal as it is then, so a
 // preview a small terminal had no room for comes back when it grows.
 func TestTheSplitFollowsAResize(t *testing.T) {
-	m, _ := stackModel(t)
+	m, _ := sceneModel(t, modeRepos)
 	m.setPreview("preview-marker")
 	for _, c := range []struct {
 		cols, rows int
@@ -242,7 +325,7 @@ func TestTheSplitFollowsAResize(t *testing.T) {
 		{70, 20, false},
 	} {
 		m.Update(tea.WindowSizeMsg{Width: c.cols, Height: c.rows})
-		if got := strings.Contains(m.View(), "preview-marker"); got != c.shown {
+		if got := strings.Contains(m.View().Content, "preview-marker"); got != c.shown {
 			t.Errorf("%dx%d: preview shown %v, want %v", c.cols, c.rows, got, c.shown)
 		}
 	}
@@ -255,5 +338,19 @@ func TestAFailedPreviewShowsItsError(t *testing.T) {
 	msg := loadPreview(&row{session: "gone", dir: "/"}, 1)().(previewMsg)
 	if !strings.Contains(msg.text, "session not found") {
 		t.Errorf("preview of a failed read = %q", msg.text)
+	}
+}
+
+// The picker opens on the session the pane last held, its place open around
+// it, so its peers are a keystroke away.
+func TestOpeningLandsOnTheHeldSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root, live := scene(t)
+	engine, tree, api, _ := sceneDirs(root)
+	recordLast("src.acme.engine+review")
+	m := newPickModel(live, []string{engine, tree, api}, map[string]string{}, "", visits{}, modeRepos)
+	m.opening()
+	if _, _, r := m.current(); r == nil || r.session != "src.acme.engine+review" {
+		t.Errorf("opened on %+v", r)
 	}
 }

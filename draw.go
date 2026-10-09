@@ -4,7 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -55,7 +56,14 @@ func (m *pickModel) previewBox() (layout, int, int) {
 	}
 }
 
-func (m *pickModel) View() string {
+func (m *pickModel) View() tea.View {
+	v := tea.NewView(m.screen())
+	v.AltScreen = true
+	return v
+}
+
+// screen is everything drawn, inside the frame.
+func (m *pickModel) screen() string {
 	w, h := m.inner()
 	if w < 10 || h < 4 {
 		return ""
@@ -85,14 +93,14 @@ func (m *pickModel) View() string {
 func (m *pickModel) previewView() []string {
 	v := &m.preview
 	rows := strings.Split(v.View(), "\n")
-	bar := scrollbar(v.TotalLineCount(), v.Height, v.YOffset)
-	out := make([]string, v.Height)
+	bar := scrollbar(v.TotalLineCount(), v.Height(), v.YOffset())
+	out := make([]string, v.Height())
 	for i := range out {
 		var row string
 		if i < len(rows) {
 			row = rows[i]
 		}
-		out[i] = fit(row, v.Width) + bar[i]
+		out[i] = fit(row, v.Width()) + bar[i]
 	}
 	return out
 }
@@ -101,7 +109,7 @@ func (m *pickModel) previewView() []string {
 // the first of them, offset, stands: a thumb and no track, sized and placed as
 // fzf places its own, and blank where every line fits.
 func scrollbar(total, height, offset int) []string {
-	out := make([]string, height)
+	out := make([]string, max(height, 0))
 	for i := range out {
 		out[i] = " "
 	}
@@ -131,28 +139,59 @@ func (m *pickModel) header() string {
 	case m.status != "":
 		return errStyle.Render(m.status)
 	}
-	var keys string
-	if r := m.current(); r != nil && r.dir != "" {
-		keys = hints(r.state())
-	}
-	if len(m.stack) > 1 {
-		keys += "  ← back"
-	}
-	if m.top().rung.view != viewRepos {
-		keys += "  ⌃g repos"
+	keys := m.hints()
+	if m.mode == modeRepos {
+		keys = append(keys, "⇥ dirs")
+	} else {
+		keys = append(keys, "⇥ repos")
 	}
 	if m.held != nil {
-		keys += "  ⎋ leave"
+		keys = append(keys, "⎋ leave")
 	}
-	return headerStyle.Render(strings.TrimSpace(keys))
+	return headerStyle.Render(strings.Join(keys, "  "))
 }
 
-// info is the count of rows the query left of those on the rung, the marked
-// ones after it, and a rule to the edge.
+// hints is the keys worth offering for the line under the cursor.
+//
+// A key that would do nothing is not offered: nothing to take where nobody
+// else holds the session, nothing to kill where nothing is running, and
+// `⏎ start` rather than `⏎ attach` where entering means making one.
+func (m *pickModel) hints() []string {
+	ln, pl, r := m.current()
+	switch {
+	case ln == nil:
+		return nil
+	case ln.kid < 0:
+		keys := []string{"⏎ open"}
+		if m.top().query == "" && m.top().expanded(m.top().cursor) {
+			keys[0] = "⏎ close"
+		}
+		keys = append(keys, "⌥⏎ new", "⇧⏎ mark")
+		if pl.row.count > 0 {
+			keys = append(keys, "⌦ kill")
+		}
+		return keys
+	case r.session == "":
+		return []string{"⏎ start"}
+	case r.held:
+		return []string{"⏎ take", "⌥⏎ new", "⇧⏎ mark", "⌦ kill"}
+	default:
+		return []string{"⏎ attach", "⌥⏎ new", "⇧⏎ mark", "⌦ kill"}
+	}
+}
+
+// info is the count of places the query left of those in the view, the
+// marked lines after it, and a rule to the edge.
 func (m *pickModel) info(width int) string {
-	l := m.top()
-	count := strconv.Itoa(len(l.hits)) + "/" + strconv.Itoa(len(l.items))
-	if n := len(l.marked); n > 0 {
+	p := m.top()
+	shown := 0
+	for _, ln := range p.lines {
+		if ln.kid < 0 {
+			shown++
+		}
+	}
+	count := strconv.Itoa(shown) + "/" + strconv.Itoa(len(p.places))
+	if n := len(p.marked); n > 0 {
 		count += " (" + strconv.Itoa(n) + ")"
 	}
 	rule := max(width-len(count)-3, 0)
@@ -166,44 +205,57 @@ func (m *pickModel) listView(width, height int) []string {
 	head := []string{m.query.View(), m.info(width), m.header()}
 	rows := max(height-len(head), 1)
 	body := m.rowsView(width-1, rows)
-	bar := scrollbar(len(m.top().hits), rows, m.top().offset)
+	bar := scrollbar(len(m.top().lines), rows, m.top().offset)
 	for i := range body {
 		body[i] = fit(body[i], width-1) + bar[i]
 	}
 	return append(head, body...)
 }
 
-// rowsView is the rows of the top rung that fit in height lines, kept around
-// the cursor.
+// rowsView is the lines of the view that fit in height rows, kept around the
+// cursor. A place is marked open or closed, and what it holds is indented
+// under it.
 func (m *pickModel) rowsView(width, height int) []string {
 	var lines []string
-	l := m.top()
-	if l.cursor < l.offset {
-		l.offset = l.cursor
+	p := m.top()
+	if p.cursor < p.offset {
+		p.offset = p.cursor
 	}
-	if l.cursor >= l.offset+height {
-		l.offset = l.cursor - height + 1
+	if p.cursor >= p.offset+height {
+		p.offset = p.cursor - height + 1
 	}
-	if len(l.items) == 0 {
-		lines = append(lines, "  "+headerStyle.Render(empty(l.rung)))
+	if len(p.places) == 0 {
+		lines = append(lines, "  "+headerStyle.Render(empty(p.mode)))
 	}
-	for i := l.offset; i < len(l.hits) && len(lines) < height; i++ {
-		h := l.hits[i]
-		it := l.items[h.item]
-		on := i == l.cursor
+	for i := p.offset; i < len(p.lines) && len(lines) < height; i++ {
+		ln := p.lines[i]
+		pl := p.places[ln.place]
+		on := i == p.cursor
 		marker := " "
-		if l.marked[rowKey(it.row)] {
+		if p.marked[lineKey(p, ln)] {
 			marker = markerStyle.Render("┃")
 		}
-		status := it.row.status
+		var r row
+		var text, lead string
+		if ln.kid < 0 {
+			r, text = pl.row, p.text[ln.place]
+			lead = "▸ "
+			if p.expanded(i) {
+				lead = "▾ "
+			}
+		} else {
+			r, text = pl.kids[ln.kid], p.kidText[ln.place][ln.kid]
+			lead = "    "
+		}
+		status := r.status
 		if status == "" {
 			status = strings.Repeat(" ", statusWidth)
 		}
-		text := ansi.Truncate(marker+status+highlight(it.text, h.pos, on), width-1, "…")
+		body := ansi.Truncate(marker+ruleStyle.Render(lead)+status+highlight(text, ln.pos, on), width-1, "…")
 		if on {
-			lines = append(lines, pointerStyle.Render("▌")+underCursor(text, width-1))
+			lines = append(lines, pointerStyle.Render("▌")+underCursor(body, width-1))
 		} else {
-			lines = append(lines, gutterStyle.Render("▌")+text)
+			lines = append(lines, gutterStyle.Render("▌")+body)
 		}
 	}
 	for len(lines) < height {
