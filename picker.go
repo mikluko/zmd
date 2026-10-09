@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -64,10 +67,30 @@ func pollSessions() tea.Cmd {
 	})
 }
 
+// reposMsg is the repositories, walked or asked for again.
+type reposMsg struct {
+	repos []string
+	ident map[string]string
+}
+
+// rewalk is how often the picker asks for the repositories again, so one
+// cloned while it is up shows. A daemon answers at once; without one this is
+// a walk of ~, which is why it is not every second.
+const rewalk = 30 * time.Second
+
+// pollRepos asks for the repositories below home once rewalk has passed.
+func pollRepos(home string) tea.Cmd {
+	return tea.Tick(rewalk, func(time.Time) tea.Msg {
+		repos, ident := walked(context.Background(), dialDeck(), home)
+		return reposMsg{repos: repos, ident: ident}
+	})
+}
+
 // killedMsg reports a kill and what is running after it.
 type killedMsg struct {
-	live []Session
-	err  error
+	live  []Session
+	err   error
+	stale bool // what is running could not be read, and live says nothing
 }
 
 // outcome is what the picker was left with: a session to attach, and where to
@@ -84,6 +107,7 @@ type pickModel struct {
 	held  *Session // what escape leaves for, nil where there is nothing to go back to
 	repos []string
 	ident map[string]string
+	home  string // where repositories are walked from, "" for never again
 	start string
 	seen  visits
 	now   time.Time
@@ -96,6 +120,7 @@ type pickModel struct {
 	width, height int
 	seq           int
 	preview       viewport.Model
+	steady        steady // what is running, held back until two readings agree
 	status        string // an error or a notice, shown until the next key
 
 	asking string // an inline yes-or-no question, empty when none is open
@@ -133,6 +158,7 @@ func (m *pickModel) show(mo mode) {
 	m.query.SetValue(m.top().query)
 	m.query.CursorEnd()
 	m.query.Prompt = mo.String() + "> "
+	m.sizeQuery()
 }
 
 // lineKey is what identifies a line across rebuilds: the place it is, the
@@ -376,7 +402,11 @@ func listDir(dir string, w *bytes.Buffer) error {
 }
 
 func (m *pickModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.fetchPreview(), pollSessions())
+	cmds := []tea.Cmd{textinput.Blink, m.fetchPreview(), pollSessions()}
+	if m.home != "" {
+		cmds = append(cmds, pollRepos(m.home))
+	}
+	return tea.Batch(cmds...)
 }
 
 // relive rebuilds every view over live, keeping each cursor where it was.
@@ -393,6 +423,7 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.sizePreview()
+		m.sizeQuery()
 		return m, nil
 
 	case previewMsg:
@@ -405,11 +436,26 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = msg.err.Error()
 		}
+		if msg.stale {
+			return m, nil
+		}
 		m.relive(msg.live)
 		return m, m.fetchPreview()
 
+	case reposMsg:
+		if slices.Equal(msg.repos, m.repos) && maps.Equal(msg.ident, m.ident) {
+			return m, pollRepos(m.home)
+		}
+		m.repos, m.ident = msg.repos, msg.ident
+		m.relive(m.live)
+		return m, pollRepos(m.home)
+
 	case liveMsg:
-		if msg.err != nil || fingerprint(msg.live) == fingerprint(m.live) {
+		if msg.err != nil {
+			return m, pollSessions()
+		}
+		fp := fingerprint(msg.live)
+		if !m.steady.settled(fp) || fp == fingerprint(m.live) {
 			return m, pollSessions()
 		}
 		m.relive(msg.live)
@@ -477,22 +523,27 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "delete", "alt+delete":
-		names := m.killTargets()
-		if len(names) == 0 {
+		targets := m.killTargets()
+		if len(targets) == 0 {
 			return m, nil
+		}
+		var names, labels []string
+		for _, s := range targets {
+			names = append(names, s.Name)
+			labels = append(labels, sessionLabel(s))
 		}
 		kill := func() (tea.Model, tea.Cmd) {
 			p.marked = map[string]bool{}
 			return m, func() tea.Msg {
 				err := killSessions(names)
-				live, _ := sessions()
-				return killedMsg{live: live, err: err}
+				live, listErr := sessions()
+				return killedMsg{live: live, err: errors.Join(err, listErr), stale: listErr != nil}
 			}
 		}
 		if msg.String() == "alt+delete" {
 			return kill()
 		}
-		m.asking, m.onYes = question(names), kill
+		m.asking, m.onYes = question(labels), kill
 		return m, nil
 	}
 
@@ -552,7 +603,7 @@ func (m *pickModel) enter() (tea.Model, tea.Cmd) {
 
 // killTargets is every session the marked lines stand for, or the line under
 // the cursor where nothing is marked: a place stands for everything it holds.
-func (m *pickModel) killTargets() []string {
+func (m *pickModel) killTargets() []Session {
 	p := m.top()
 	var picked []row
 	for i, pl := range p.places {
@@ -572,16 +623,16 @@ func (m *pickModel) killTargets() []string {
 		}
 	}
 	seen := map[string]bool{}
-	var names []string
+	var out []Session
 	for _, r := range picked {
 		for _, s := range r.found {
 			if !seen[s.Name] {
 				seen[s.Name] = true
-				names = append(names, s.Name)
+				out = append(out, s)
 			}
 		}
 	}
-	return names
+	return out
 }
 
 func (m *pickModel) move(delta int) (tea.Model, tea.Cmd) {
@@ -649,10 +700,7 @@ func (m *pickModel) opening() {
 	case m.held != nil:
 		want = "s:" + m.held.Name
 	case m.start != "":
-		dir = m.start
-		if p.mode == modeRepos {
-			dir = placeOf(m.start)
-		}
+		dir = placeOf(m.start)
 	}
 	for i, pl := range p.places {
 		for k, kid := range pl.kids {
@@ -719,6 +767,7 @@ func run() error {
 	}
 
 	m := newPickModel(live, repos, ident, start, seen, loadMode())
+	m.home = home
 	m.opening()
 
 	final, err := tea.NewProgram(m).Run()

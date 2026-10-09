@@ -136,3 +136,13 @@ func TestPlacesHoldingSessionsLead(t *testing.T) {
 		t.Errorf("order %q, want dbca", order)
 	}
 }
+
+// A repository the walk never reached is a directory like any other, or a
+// picker started in one would stand somewhere it cannot show.
+func TestAnUnwalkedRepositoryIsADirectory(t *testing.T) {
+	root, _ := scene(t)
+	engine, _, _, _ := sceneDirs(root)
+	outside := repoAt(t, filepath.Join(t.TempDir(), "elsewhere"))
+	places := dirPlaces(nil, []string{engine}, filepath.Join(outside, "sub"), visits{}, time.Now())
+	placeAt(t, places, outside)
+}

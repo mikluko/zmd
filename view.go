@@ -112,7 +112,8 @@ func repoPlaces(live []Session, repos []string, ident map[string]string, seen vi
 }
 
 // dirPlaces is one place per directory outside the walked repositories that a
-// session stands in, that has been worked in, or that the pane stands in.
+// session stands in, that has been worked in, or that the pane stands in. A
+// repository the walk did not reach, outside ~, is one of these.
 //
 // Expanded, a directory holds the sessions standing exactly there, then the
 // offer of another. A directory that has gone from disk since it was worked
@@ -139,12 +140,12 @@ func dirPlaces(live []Session, repos []string, start string, seen visits, now ti
 		dirs[dir] = true
 	}
 	for dir := range seen {
-		if !roots[dir] && repoRoot(dir) == "" && isDir(dir) {
+		if !roots[dir] && !roots[repoRoot(dir)] && isDir(dir) {
 			dirs[dir] = true
 		}
 	}
-	if start != "" && repoRoot(start) == "" {
-		dirs[filepath.Clean(start)] = true
+	if start != "" && !roots[repoRoot(start)] {
+		dirs[placeOf(start)] = true
 	}
 
 	var out []place

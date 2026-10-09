@@ -129,11 +129,11 @@ func sessionLabel(s Session) string {
 }
 
 // question is what a kill asks before it happens.
-func question(names []string) string {
-	if len(names) == 1 {
-		return "kill " + names[0] + "?"
+func question(labels []string) string {
+	if len(labels) == 1 {
+		return "kill " + labels[0] + "?"
 	}
-	return "kill " + strconv.Itoa(len(names)) + " sessions?"
+	return "kill " + strconv.Itoa(len(labels)) + " sessions?"
 }
 
 // killOrder puts the session this is running inside last.

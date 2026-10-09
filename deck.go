@@ -136,13 +136,18 @@ func (d *deck) walk() {
 // where it went, which is how places nobody started a session in get learned.
 func (d *deck) watchSessions(ctx context.Context) {
 	var was string
-	where := map[string]string{}
+	var settled steady
+	var where map[string]string
 	for {
 		live, err := sessions()
 		if err == nil {
-			where = creditMoves(where, live)
+			if where == nil {
+				where = positions(live)
+			} else {
+				where = creditMoves(where, live)
+			}
 			now := fingerprint(live)
-			if now != was {
+			if settled.settled(now) && now != was {
 				if was != "" {
 					d.announce(deckv1.WatchResponse_REASON_SESSIONS)
 				}
@@ -222,6 +227,20 @@ func serve(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// positions is where every session in live stands, by name.
+//
+// The daemon's first reading is taken as where sessions already were rather
+// than as moves, or every restart would credit each running session a visit.
+func positions(live []Session) map[string]string {
+	out := map[string]string{}
+	for _, s := range live {
+		if s.Dir != "" {
+			out[s.Name] = s.Dir
+		}
+	}
+	return out
 }
 
 // creditMoves credits a visit to each place a session has moved to since

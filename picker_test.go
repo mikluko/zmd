@@ -400,6 +400,7 @@ func TestARefreshShowsSessionsStartedElsewhere(t *testing.T) {
 	seekLabel(t, m, "review-pr")
 	live := append(append([]Session(nil), m.live...), Session{Name: "fresh", Clients: "0", Dir: api})
 	m.Update(liveMsg{live: live})
+	m.Update(liveMsg{live: live})
 	if _, _, r := m.current(); r == nil || r.session != "src.acme.engine+review" {
 		t.Errorf("cursor after refresh on %+v", r)
 	}
@@ -418,5 +419,80 @@ func TestEndsHost(t *testing.T) {
 		if got := endsHost(live, host); got != want {
 			t.Errorf("endsHost(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+// One reading showing a client is not believed until the next agrees: reading
+// a preview attaches a client for as long as the read takes.
+func TestAClientSeenOnceIsNotBelieved(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	live := append([]Session(nil), m.live...)
+	for i := range live {
+		live[i].Clients = "1"
+	}
+	m.Update(liveMsg{live: m.live})
+	m.Update(liveMsg{live: live})
+	if fingerprint(m.live) == fingerprint(live) {
+		t.Error("a single reading was believed")
+	}
+	m.Update(liveMsg{live: live})
+	if fingerprint(m.live) != fingerprint(live) {
+		t.Error("two agreeing readings were not believed")
+	}
+}
+
+// A long path keeps the end that tells it from its siblings.
+func TestKeepTailCutsFromTheLeft(t *testing.T) {
+	got := keepTail("/very/long/shared/prefix/freshdir2", 12)
+	if !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "/freshdir2") || ansi.StringWidth(got) != 12 {
+		t.Errorf("keepTail = %q", got)
+	}
+	if got := keepTail("/short", 12); got != "/short" {
+		t.Errorf("a path that fits was cut: %q", got)
+	}
+}
+
+// The query scrolls within its line rather than running off the end of it,
+// so what is typed last and the cursor stay in view.
+func TestALongQueryKeepsItsEndInView(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	press(m, typed(strings.Repeat("a", 120)+"TAIL")...)
+	if !strings.Contains(m.View().Content, "TAIL") {
+		t.Error("the end of a long query is out of view")
+	}
+}
+
+// A kill whose aftermath could not be read leaves the list as it was rather
+// than emptying it.
+func TestAKillThatCannotBeReadKeepsTheList(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	before := fingerprint(m.live)
+	m.Update(killedMsg{live: nil, stale: true})
+	if fingerprint(m.live) != before {
+		t.Error("the list was emptied")
+	}
+}
+
+// A kill asks by what the row shows, its title, not by a name it hides.
+func TestAKillAsksByTitle(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	seekLabel(t, m, "review-pr")
+	press(m, keyDel)
+	if m.asking != "kill review-pr?" {
+		t.Errorf("asked %q", m.asking)
+	}
+}
+
+// A repository cloned while the picker is up shows on the next walk.
+func TestARewalkShowsANewRepository(t *testing.T) {
+	m, root := sceneModel(t, modeRepos)
+	fresh := repoAt(t, root+"/src/acme/fresh")
+	before := len(m.top().places)
+	m.Update(reposMsg{repos: append(append([]string(nil), m.repos...), fresh), ident: m.ident})
+	if got := len(m.top().places); got != before+1 {
+		t.Errorf("%d places after a clone, want %d", got, before+1)
 	}
 }

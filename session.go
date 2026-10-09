@@ -149,3 +149,17 @@ func fingerprint(live []Session) string {
 	}
 	return b.String()
 }
+
+// steady passes a reading on once it has been read twice running.
+//
+// Reading a session's scrollback attaches a client to it for as long as the
+// read takes, so a single reading can show a client nobody has: the preview's
+// own. A reading taken a poll apart from an identical one is not that.
+type steady struct{ last string }
+
+// settled records fp and reports whether it matches the reading before it.
+func (s *steady) settled(fp string) bool {
+	ok := fp == s.last
+	s.last = fp
+	return ok
+}

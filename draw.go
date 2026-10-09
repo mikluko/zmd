@@ -57,6 +57,22 @@ func (m *pickModel) previewBox() (layout, int, int) {
 	}
 }
 
+// listWidth is the width of the list's column inside the frame.
+func (m *pickModel) listWidth() int {
+	w, _ := m.inner()
+	if lay, pw, _ := m.previewBox(); lay == layoutBeside {
+		return w - pw - 3
+	}
+	return w
+}
+
+// sizeQuery gives the query the list's width less its prompt, so a long query
+// scrolls within its line rather than running off the end of it. The input
+// works out that scrolling as keys arrive, so the width is set ahead of them.
+func (m *pickModel) sizeQuery() {
+	m.query.SetWidth(max(m.listWidth()-ansi.StringWidth(m.query.Prompt)-1, 1))
+}
+
 func (m *pickModel) View() tea.View {
 	v := tea.NewView(m.screen())
 	v.AltScreen = true
@@ -255,7 +271,11 @@ func (m *pickModel) rowsView(width, height int) []string {
 		if status == "" {
 			status = strings.Repeat(" ", statusWidth)
 		}
-		body := ansi.Truncate(marker+ruleStyle.Render(lead)+status+highlight(text, ln.pos, on), width-1, "…")
+		shown := highlight(text, ln.pos, on)
+		if ln.kid < 0 && p.mode == modeDirs {
+			shown = keepTail(shown, width-1-1-len(lead)-statusWidth)
+		}
+		body := ansi.Truncate(marker+ruleStyle.Render(lead)+status+shown, width-1, "…")
 		if on {
 			lines = append(lines, pointerStyle.Render("▌")+underCursor(body, width-1))
 		} else {
@@ -266,6 +286,16 @@ func (m *pickModel) rowsView(width, height int) []string {
 		lines = append(lines, "")
 	}
 	return lines[:height]
+}
+
+// keepTail cuts s to width cells from the left, so a path keeps the end that
+// tells it from its siblings rather than the start they share.
+func keepTail(s string, width int) string {
+	over := ansi.StringWidth(s) - width
+	if over <= 0 || width < 2 {
+		return s
+	}
+	return "…" + ansi.TruncateLeft(s, over+1, "")
 }
 
 // underCursor paints line in the cursor row's colours across width cells.

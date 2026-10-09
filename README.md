@@ -210,7 +210,8 @@ is not offered.
 Beside the list where the terminal is wide, above it where it is not, and left
 out entirely where what remained of the list would be unreadable. A session
 previews as its own scrollback through `zmx history`, at the end of it; a
-repository as its history through `git log --graph`, from the newest commit.
+repository as its history through `git log --graph`, from the newest commit;
+any other directory as what it holds, directories first.
 
 ## The daemon
 
