@@ -1,10 +1,13 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // sceneModel is a picker over scene, opened on the given view, with titles on
@@ -352,5 +355,22 @@ func TestOpeningLandsOnTheHeldSession(t *testing.T) {
 	m.opening()
 	if _, _, r := m.current(); r == nil || r.session != "src.acme.engine+review" {
 		t.Errorf("opened on %+v", r)
+	}
+}
+
+// A directory no repository holds previews as what is in it, directories
+// first.
+func TestADirectoryPreviewsAsItsListing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "z"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	msg := loadPreview(&row{dir: dir}, 1)().(previewMsg)
+	lines := strings.Split(strings.TrimSpace(ansi.Strip(msg.text)), "\n")
+	if len(lines) != 2 || lines[0] != "z/" || lines[1] != "a.txt" {
+		t.Errorf("listing %q", lines)
 	}
 }

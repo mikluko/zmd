@@ -19,6 +19,7 @@ var (
 	inputStyle    = lipgloss.NewStyle().Bold(true)
 	infoStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("144"))
 	headerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
+	dirStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
 	matchStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("108"))
 	curMatchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("151")).Bold(true)
 	pointerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("161")).Background(lipgloss.Color("236")).Bold(true)

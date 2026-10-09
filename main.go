@@ -21,24 +21,23 @@ const usage = `zmd selects and starts zmx sessions.
 
 Usage:
   zmd            Pick a session or a repository, and attach
-  zmd daemon     Hold the walk warm, so a picker need not walk for itself
+  zmd daemon     Hold the walk warm, and learn directories from where
+                 sessions cd to
   zmd version    Print the version
 
-The picker is a stack of rungs: the sessions running, the repositories one can
-be started in, and a repository's checkouts. Right pushes, left pops, and
-enter is right's alias. It opens on the sessions, with the cursor on the one
-this pane last held.
+The picker lists places in two views: repositories below ~, and directories
+outside any that sessions stand in or have been worked in. Tab switches
+between them. A place opens in place into its sessions, its idle worktrees and
+the offer of another session. It opens on the session this pane last held.
 
 In the picker:
-  enter, right   descend: attach the session, list a repository's worktrees,
-                 or enter a checkout and start a session where it has none.
-                 A session another terminal has open is taken, after asking
-  left           back a rung; backspace does the same. With a query typed
-                 these correct it instead
-  ctrl-g         the repositories, from any rung
+  enter          open or close a place; attach a session, taking it after
+                 asking where another terminal has it open; start one on
+                 <new session> or an idle worktree
+  tab            switch between repos and dirs
+  shift-enter    mark, for a kill that takes several at once
   alt-enter      start another session where the cursor stands, whatever is
                  already running there
-  tab            mark, for a kill that takes several at once
   delete         kill what the marked rows stand for, after asking;
                  alt-delete without asking
   alt-up/down    scroll the preview; alt-pgup and alt-pgdown by the page

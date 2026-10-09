@@ -1,7 +1,7 @@
 # zmd
 
-Session navigation for [zmx](https://zmx.sh): one list of places, holding the
-sessions there are and the directories a session can be started in.
+Session navigation for [zmx](https://zmx.sh): a list of places, each holding
+the sessions running there and the offer of another.
 
 zmx persists terminal sessions and, by design, provides no windows, tabs or
 splits. What it also has no opinion about is *which* session you want. This
@@ -11,60 +11,76 @@ fills that gap and nothing else.
 zmd
 ```
 
-## The stack
+## Two views of places
 
-The picker is a stack of rungs. `right` pushes, `left` pops back to wherever
-it was pushed from, and `enter` is right's alias: descending is one motion and
-it has one key too many already.
+The picker lists places, in one of two views. `tab` switches between them, and
+the picker reopens in whichever you switched to last.
 
 ```
-sessions      every session running            ⌃g ↓        where it opens
-repos         one row per checkout             →  ↓        only if it has worktrees
-checkouts     the repository, then its worktrees
-sessions      the ones standing in that checkout
+repos    every repository below ~ that is not a worktree
+dirs     directories outside any repository: where sessions stand, where
+         sessions have been, and where the picker was started
 ```
 
-**Sessions are the ground floor**, and what the picker opens on. They are what
-a switch is between, and what a scan is over: an agent wanting attention and a
-shell left running are both facts about sessions, and looking for either in a
-list of repositories means reading a list twenty times longer and then
-descending to learn which session it was.
+The two never overlap. A session counts against the repository it stands in,
+worktrees included, and only a session outside every repository gets a
+directory of its own.
 
-**The repositories above are how a session is started somewhere new**, which
-is the rarer thing and the only thing they are for. A checkout that already
-holds sessions pushes straight back down to them, filtered to itself, rather
-than listing them a second way.
+**A place opens in place.** `enter` on it lists what it holds, indented under
+it, and `enter` again closes it:
 
-Typing narrows whatever rung you are on. The prompt says which that is.
+```
+▾ 2 acme/api                   ~/src/acme
+     ● retry-bug
+     ○ flaky-ci        acme/api/rebase-517
+       acme/api/docs-pass
+       <new session>
+▸   acme/web                   ~/src/acme
+```
+
+A repository holds every session in it or in its worktrees, then each worktree
+no session stands in, then the offer of another session at the repository
+itself. Entering a worktree with no session starts one there. A directory holds
+the sessions standing exactly in it, then the offer.
+
+**Places with sessions lead**, then the rest by how much and how lately they
+have been worked in: a visit a day ago outranks the same number a month ago, as
+in [zoxide](https://github.com/ajeetdsouza/zoxide).
+
+**Typing narrows the view.** A query matches places and session titles. A
+session that matches brings its place along, open on the matches alone, so a
+match never stands without the place it is in. A place that matches only itself
+is listed closed, and entering it clears the query and leaves it open under the
+cursor.
 
 ## The list
 
 ```
- ●   retry-bug              acme/gateway   ~/src/acme/gateway
- ○   zmd.ghostty.6f2a91c4   acme/gateway   ~/src/acme/gateway
- ●   zmd.ghostty.b71e0d55   widget/api     ~/src/widget/api
- ↑↑↑
- │││
- ││└─ reserved
- ││
- │└── this session: ○ no client, ● a client
- │
- └─── what git makes of the directory: bright a repository, dim a worktree of one
+▾ 2 acme/gateway             ~/src/acme
+     ●  retry-bug
+     ○  zmd.ghostty.6f2a91c4  acme/gateway/rebase-517
+  ↑ ↑↑↑
+  │ │││
+  │ ││└─ reserved
+  │ ││
+  │ │└── a place: how many sessions it holds; a session: ○ no client, ● a client
+  │ │
+  │ └─── what git makes of the directory: bright a repository, dim a worktree of one
+  │
+  └───── a place: ▸ closed, ▾ open
 ```
 
 **The status column** is three cells wide whatever it has to say, so every
 name below it starts in the same place. The third cell is empty: it is held
 for what the agent in a session is doing, which nothing sets yet.
 
-On the repositories rung the second cell is a count instead — how many
-sessions are alive at or below the row, `+` past nine. At a level where no
-single session can be acted on, how much is alive below is the whole of what
-the mark is read for, and the repositories holding something lead the list.
+On a place the second cell is a count: how many sessions it holds, `+` past
+nine. On a session it says whether a client is attached.
 
-A session row says what it is, what git calls where it is, and where that is.
-The middle earns its column because the two differ: a checkout named
-`acme/workspace` can stand at `~/src/other`, which the name does not give up.
-It goes blank where it would only repeat the path, `~` being the case.
+A session goes by its title where something has set one with
+`zmx set <name> title=…`, and by its name where nothing has. Where it stands
+somewhere other than its place, in a worktree or a directory below, the row
+says where.
 
 **A place's name** is what git says it is: `owner/name`, read off the
 checkout's remote. The path is where a checkout happens to sit and says
@@ -96,24 +112,25 @@ its fallback font all along.
 
 | | |
 | --- | --- |
-| `enter`, `right` | Descend. On a session, attach it. On a repository with worktrees, list them. On a checkout, its sessions, or start one where it has none. |
-| `left`, `backspace` | Back a rung. With a query typed they correct it instead. |
-| `ctrl-g` | The repositories, from any rung. |
+| `enter` | On a place, open or close it. On a session, attach it. On `<new session>` or a worktree with no session, start one there. A session another terminal has open is taken, after asking. |
+| `tab` | Switch between the repos and dirs views. |
+| `shift-enter` | Mark, for a kill that takes several at once. A marked place stands for every session it holds. |
 | `alt-enter` | Start another session where the cursor stands, whatever is already running there. |
-| `tab` | Mark, for a kill that takes several at once. Enter clears the marks rather than acting on them. |
-| `delete` | Kill the sessions the marked rows stand for, after asking. `y` kills; any other key does not. |
+| `delete` | Kill the sessions the marked rows stand for, or the row under the cursor, after asking. `y` kills; any other key does not. |
 | `alt-delete` | Kill them without asking. |
 | `alt-up`, `alt-down` | Scroll the preview. `alt-pgup` and `alt-pgdown` scroll it by the page. |
 | `esc` | Leave for the session this pane last attached to. Leave outright where there is none, or where another terminal has it. |
 
-The hint line offers only the keys that would do something where the cursor
-stands: no `⌦ kill` where nothing is running, `⏎ start` rather than `⏎ attach`
-where entering means making one, and no `← back` on the ground floor.
+The arrows move the cursor and edit the query, and nothing else: with places
+opening in place there is no level to walk up or down.
 
-There is no `ctrl-enter`: a terminal sends the same byte for it as for
-`enter`, and the picker cannot tell two keys apart that arrive as one. There is
-no `shift-enter` or `ctrl-delete` either: a terminal sends them as sequences
-the picker does not decode.
+The hint line offers only the keys that would do something where the cursor
+stands: no `⌦ kill` where nothing is running, and `⏎ start` rather than
+`⏎ attach` where entering means making one.
+
+`shift-enter` is a key of its own only because the picker asks the terminal
+for the kitty keyboard protocol, which Ghostty and kitty implement. A terminal without it sends `shift-enter` as `enter`, and marking
+is then out of reach.
 
 ## One terminal to a session
 
@@ -157,35 +174,40 @@ none.
 
 ## Where it opens
 
-On the sessions rung, with the cursor on the session this pane last held —
-which, after a detach, is the one just left, so its peers are around it.
+In the view switched to last, with the cursor on the session this pane last
+held and its place open around it — which, after a detach, is the session just
+left, so its peers are around it. Where that session lives in the other view,
+the cursor starts at the top.
 
-A pane that has held nothing has only where it stands to go on, so it opens
-one rung in, narrowed to that directory, with the cursor on the offer of a
-session there. `left` pops back to every session there is.
+A pane that has held nothing has only where it stands to go on, so its place
+opens with the cursor on the offer of a session there.
 
-Narrowing reaches downwards: a directory holds the work under it as much as
-the work in it, and a repository's worktrees are below the repository. The
-repos rung already counts them that way, so a rung that stopped at an exact
-match would disagree with the count that led to it. The offer is for the
-directory itself, never for anywhere below it.
-
-```
-acme/gateway>
- ●   retry-bug        acme/gateway   ~/src/acme/gateway
-     <new session>    acme/gateway   ~/src/acme/gateway   ← the cursor starts here
-```
-
-The directory the picker was *run* in is no use for this: a pane runs it in a
-loop, and that loop's shell never chdirs, so it stands where the pane was
+The directory the picker was *run* in is no use for the first: a pane runs it
+in a loop, and that loop's shell never chdirs, so it stands where the pane was
 opened however much work has happened since. That record is kept per pane,
 keyed by the pid of the shell whose loop runs the picker, which is the same
 process for as long as the pane is open. Panes sharing one record is panes
 going back to a session they were never in.
 
+## How directories are learned
+
+There are some 25,000 directories below `~` within five levels, not counting
+hidden ones, and nearly all of them are caches, build output and `Library`, so the dirs view is learned rather
+than walked. A directory is learned by working in it: zmx follows a session's
+`cd` and reports where it went, and `zmd daemon` credits a visit to every
+place a session moves to. Open a session anywhere, `cd` to where the work is,
+and the next picker offers it.
+
+Without the daemon the picker learns only when it runs: the place it attaches
+or starts in, and any place a running session stands in that it has not seen
+before.
+
+The record is `visits.json` in the state directory. A directory gone from disk
+is not offered.
+
 ## The preview
 
-Beside the list where the terminal is wide, below it where it is not, and left
+Beside the list where the terminal is wide, above it where it is not, and left
 out entirely where what remained of the list would be unreadable. A session
 previews as its own scrollback through `zmx history`, at the end of it; a
 repository as its history through `git log --graph`, from the newest commit.

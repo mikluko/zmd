@@ -310,8 +310,8 @@ func (m *pickModel) follows() bool {
 }
 
 // loadPreview reads what r previews as off the UI goroutine: a session's
-// scrollback, or the git history of a place git tracks. A read that fails
-// previews as its error.
+// scrollback, the git history of a place git tracks, or what any other
+// directory holds. A read that fails previews as its error.
 func loadPreview(r *row, seq int) tea.Cmd {
 	return func() tea.Msg {
 		var buf bytes.Buffer
@@ -329,12 +329,32 @@ func loadPreview(r *row, seq int) tea.Cmd {
 			if cmd.Run() != nil {
 				err = fmt.Errorf("git log: %s", strings.TrimSpace(stderr.String()))
 			}
+		case r.dir != "":
+			err = listDir(r.dir, &buf)
 		}
 		if err != nil {
 			return previewMsg{seq: seq, text: errStyle.Render(err.Error())}
 		}
 		return previewMsg{seq: seq, text: buf.String()}
 	}
+}
+
+// listDir writes what dir holds, a line per entry, directories first and
+// marked with a trailing slash.
+func listDir(dir string, w *bytes.Buffer) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].IsDir() && !entries[j].IsDir() })
+	for _, e := range entries {
+		if e.IsDir() {
+			w.WriteString(dirStyle.Render(e.Name()+"/") + "\n")
+		} else {
+			w.WriteString(e.Name() + "\n")
+		}
+	}
+	return nil
 }
 
 func (m *pickModel) Init() tea.Cmd {
