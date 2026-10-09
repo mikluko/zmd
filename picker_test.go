@@ -389,3 +389,34 @@ func TestNoLineOverflowsTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+// A session started elsewhere shows on the next refresh, and the cursor stays
+// on the row it was on.
+func TestARefreshShowsSessionsStartedElsewhere(t *testing.T) {
+	m, root := sceneModel(t, modeRepos)
+	_, _, api, _ := sceneDirs(root)
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	seekLabel(t, m, "review-pr")
+	live := append(append([]Session(nil), m.live...), Session{Name: "fresh", Clients: "0", Dir: api})
+	m.Update(liveMsg{live: live})
+	if _, _, r := m.current(); r == nil || r.session != "src.acme.engine+review" {
+		t.Errorf("cursor after refresh on %+v", r)
+	}
+	for _, pl := range m.top().places {
+		if pl.row.dir == api && pl.row.count != 2 {
+			t.Errorf("api counts %d sessions after one started there, want 2", pl.row.count)
+		}
+	}
+}
+
+// Attaching from inside a session with no client would end that session, so
+// it is refused; one with a client switches it, and no session is no risk.
+func TestEndsHost(t *testing.T) {
+	live := []Session{{Name: "driven", Clients: "0"}, {Name: "watched", Clients: "1"}}
+	for host, want := range map[string]bool{"driven": true, "watched": false, "": false, "gone": false} {
+		if got := endsHost(live, host); got != want {
+			t.Errorf("endsHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}

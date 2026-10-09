@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,4 +83,14 @@ func waitFor(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("%s never appeared", path)
+}
+
+func TestSocketFitsSaysWhatToDo(t *testing.T) {
+	if err := socketFits("/tmp/deck.sock"); err != nil {
+		t.Errorf("a short path refused: %v", err)
+	}
+	err := socketFits("/" + strings.Repeat("d", 200) + "/deck.sock")
+	if err == nil || !strings.Contains(err.Error(), "ZMD_DECK_DIR") {
+		t.Errorf("a long path: %v", err)
+	}
 }

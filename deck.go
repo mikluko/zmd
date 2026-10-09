@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -140,10 +141,7 @@ func (d *deck) watchSessions(ctx context.Context) {
 		live, err := sessions()
 		if err == nil {
 			where = creditMoves(where, live)
-			now := ""
-			for _, s := range live {
-				now += s.Name + ":" + s.Clients + ":" + s.Title + "\n"
-			}
+			now := fingerprint(live)
 			if now != was {
 				if was != "" {
 					d.announce(deckv1.WatchResponse_REASON_SESSIONS)
@@ -168,6 +166,9 @@ func serve(ctx context.Context) error {
 	path := socketPath()
 	if path == "" {
 		return errors.New("nowhere to put the socket")
+	}
+	if err := socketFits(path); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -239,4 +240,15 @@ func creditMoves(where map[string]string, live []Session) map[string]string {
 	}
 	recordVisits(moved, time.Now())
 	return now
+}
+
+// socketFits reports a socket path longer than the platform can bind, which
+// bind itself reports only as an invalid argument. The limit is the size of
+// sun_path less its terminating NUL: 103 bytes on macOS, 107 on Linux.
+func socketFits(path string) error {
+	limit := len(syscall.RawSockaddrUnix{}.Path) - 1
+	if len(path) > limit {
+		return fmt.Errorf("socket path %s is %d bytes, past the %d a unix socket allows: set ZMD_DECK_DIR to a shorter directory", path, len(path), limit)
+	}
+	return nil
 }

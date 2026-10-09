@@ -139,3 +139,13 @@ func parseCwd(value string) string {
 	}
 	return u.Path
 }
+
+// fingerprint is what of live a picker draws, as one string: two readings
+// with the same fingerprint draw the same list.
+func fingerprint(live []Session) string {
+	var b strings.Builder
+	for _, s := range live {
+		b.WriteString(s.Name + "\x00" + s.Clients + "\x00" + s.Title + "\x00" + s.Dir + "\n")
+	}
+	return b.String()
+}

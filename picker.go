@@ -46,6 +46,24 @@ type previewMsg struct {
 	text string
 }
 
+// liveMsg is what is running, read again on the refresh tick.
+type liveMsg struct {
+	live []Session
+	err  error
+}
+
+// refresh is how often the picker reads what is running, so a session started
+// or killed elsewhere shows while the picker is up rather than at its next run.
+const refresh = time.Second
+
+// pollSessions reads what is running once refresh has passed.
+func pollSessions() tea.Cmd {
+	return tea.Tick(refresh, func(time.Time) tea.Msg {
+		live, err := sessions()
+		return liveMsg{live: live, err: err}
+	})
+}
+
 // killedMsg reports a kill and what is running after it.
 type killedMsg struct {
 	live []Session
@@ -358,7 +376,16 @@ func listDir(dir string, w *bytes.Buffer) error {
 }
 
 func (m *pickModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.fetchPreview())
+	return tea.Batch(textinput.Blink, m.fetchPreview(), pollSessions())
+}
+
+// relive rebuilds every view over live, keeping each cursor where it was.
+func (m *pickModel) relive(live []Session) {
+	m.live = live
+	m.held = lastHeld(m.live)
+	for _, p := range m.panes {
+		m.build(p)
+	}
 }
 
 func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -378,12 +405,15 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = msg.err.Error()
 		}
-		m.live = msg.live
-		m.held = lastHeld(m.live)
-		for _, p := range m.panes {
-			m.build(p)
-		}
+		m.relive(msg.live)
 		return m, m.fetchPreview()
+
+	case liveMsg:
+		if msg.err != nil || fingerprint(msg.live) == fingerprint(m.live) {
+			return m, pollSessions()
+		}
+		m.relive(msg.live)
+		return m, tea.Batch(pollSessions(), m.fetchPreview())
 
 	case tea.KeyPressMsg:
 		m.status = ""
@@ -641,6 +671,17 @@ func (m *pickModel) opening() {
 	}
 }
 
+// endsHost reports whether attaching from inside host would end it.
+//
+// zmx 0.8.1 reads an attach made with ZMX_SESSION set as the host's client
+// switching to the target, and a host with no client to switch is ended
+// instead. A host is clientless where it is driven by `zmx send` rather than
+// from a terminal.
+func endsHost(live []Session, host string) bool {
+	s := running(live, host)
+	return s != nil && s.Clients == "0"
+}
+
 // unseen is the place of every session the visits do not know yet, so that
 // a picker run without the daemon still learns where sessions are.
 func unseen(live []Session, seen visits) []string {
@@ -676,9 +717,6 @@ func run() error {
 		recordVisits(fresh, time.Now())
 		seen = loadVisits()
 	}
-	if !under(home, start) {
-		start = ""
-	}
 
 	m := newPickModel(live, repos, ident, start, seen, loadMode())
 	m.opening()
@@ -690,6 +728,11 @@ func run() error {
 	res := final.(*pickModel).result
 	if res.name == "" {
 		return errCancelled
+	}
+	if live, err := sessions(); err == nil {
+		if host := os.Getenv("ZMX_SESSION"); endsHost(live, host) {
+			return fmt.Errorf("session %s has no client attached, and attaching from inside it would end it: attach from a terminal", host)
+		}
 	}
 	if res.take {
 		if err := detachClients(res.name); err != nil {
