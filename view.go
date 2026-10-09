@@ -74,11 +74,12 @@ func repoPlaces(live []Session, repos []string, ident map[string]string, seen vi
 	owner := owners(live, roots)
 	trees := worktreesOf(repos)
 
+	sorted := sortedSessions(live)
 	var out []place
 	for root := range roots {
 		var found []Session
 		busy := map[string]bool{}
-		for _, s := range sortedSessions(live) {
+		for _, s := range sorted {
 			if owner[s.Name] == root {
 				found = append(found, s)
 				busy[filepath.Clean(s.Dir)] = true
