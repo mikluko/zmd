@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"fmt"
 	"io"
-	"os"
 	"os/exec"
+	"strings"
 )
 
 // A session's scrollback is previewed in colour, which `zmx history` gives
@@ -17,7 +19,7 @@ import (
 // is inside.
 //
 // So the colour is kept and the rest is dropped, which is what this filter
-// does and why the preview runs this binary rather than `zmx history` itself.
+// does.
 
 // sgrOnly copies r to w, keeping the colour and dropping every other escape
 // sequence.
@@ -111,20 +113,25 @@ func skipString(in *bufio.Reader) {
 }
 
 // history writes a session's scrollback to w, in colour and without anything
-// addressed to the terminal it is drawn on.
+// addressed to the terminal it is drawn on. What zmx writes to stderr comes
+// back in the error rather than reaching that terminal.
 func history(name string, w io.Writer) error {
 	cmd := exec.Command("zmx", "history", "--vt", name)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
-	cmd.Stderr = os.Stderr
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	if err := sgrOnly(w, out); err != nil {
-		cmd.Wait()
+		_ = cmd.Wait()
 		return err
 	}
-	return cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("zmx history %s: %s", name, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }

@@ -74,12 +74,3 @@ func TestSGROnlyOnWhatZmxActuallyWrites(t *testing.T) {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }
-
-func TestQuoteSurvivesAPathWithSpacesAndQuotes(t *testing.T) {
-	if got := quote("/Applications/My Tools/zmd"); got != `'/Applications/My Tools/zmd'` {
-		t.Errorf("got %s", got)
-	}
-	if got := quote("/tmp/it's"); got != `'/tmp/it'\''s'` {
-		t.Errorf("got %s", got)
-	}
-}

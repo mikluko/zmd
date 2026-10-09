@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os/exec"
@@ -40,16 +42,22 @@ func (s Session) heldElsewhere() bool {
 // sessions returns every running session, ordered by name.
 //
 // A zmx that is absent, or that reports no sessions, yields none rather than
-// an error: a picker with nothing to show is not a failure.
+// an error: a picker with nothing to show is not a failure. A zmx that fails
+// is one, carrying what it wrote to stderr, since read as none it would show
+// every session as gone.
 func sessions() ([]Session, error) {
 	out, err := exec.Command("zmx", "list").Output()
-	if err != nil {
-		// `zmx list` exits non-zero with no sessions on some paths, and its
-		// stdout is empty in exactly that case, so an empty read is the
-		// answer rather than the error.
-		if len(out) == 0 {
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		msg := strings.TrimSpace(string(exit.Stderr))
+		if strings.HasPrefix(msg, "no sessions found") {
 			return nil, nil
 		}
+		return nil, fmt.Errorf("zmx list: %s", msg)
+	case errors.Is(err, exec.ErrNotFound):
+		return nil, nil
+	case err != nil:
 		return nil, err
 	}
 	return parseSessions(strings.NewReader(string(out))), nil

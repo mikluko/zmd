@@ -1,9 +1,46 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// fakeZmx puts a zmx on PATH that writes stderr and exits with code.
+func fakeZmx(t *testing.T, stderr string, code int) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho '" + stderr + "' >&2\nexit " + strconv.Itoa(code) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "zmx"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// An empty socket directory is no sessions, whatever zmx exits with; any other
+// failure is reported, since read as none it would show every session gone.
+func TestSessionsTellsNoneFromAFailure(t *testing.T) {
+	for _, c := range []struct {
+		stderr  string
+		code    int
+		wantErr bool
+	}{
+		{"no sessions found in /tmp/zmx-501", 0, false},
+		{"no sessions found in /tmp/zmx-501", 1, false},
+		{"error: ReadOnlyFileSystem", 1, true},
+	} {
+		fakeZmx(t, c.stderr, c.code)
+		live, err := sessions()
+		if (err != nil) != c.wantErr || len(live) != 0 {
+			t.Errorf("%q exit %d: live %v err %v", c.stderr, c.code, live, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "ReadOnlyFileSystem") {
+			t.Errorf("the error drops what zmx said: %v", err)
+		}
+	}
+}
 
 // The record zmx 0.8.1 writes: a marker ahead of the first label, two spaces
 // or an arrow, tab-separated key=value, a file URI carrying the host, and no

@@ -98,24 +98,22 @@ its fallback font all along.
 | --- | --- |
 | `enter`, `right` | Descend. On a session, attach it. On a repository with worktrees, list them. On a checkout, its sessions, or start one where it has none. |
 | `left`, `backspace` | Back a rung. With a query typed they correct it instead. |
-| `ctrl-g` | From the sessions rung, the repositories. |
+| `ctrl-g` | The repositories, from any rung. |
 | `alt-enter` | Start another session where the cursor stands, whatever is already running there. |
 | `tab` | Mark, for a kill that takes several at once. Enter clears the marks rather than acting on them. |
-| `delete` | Kill the sessions the marked rows stand for, after asking. |
-| `ctrl-delete` | Kill them without asking. |
+| `delete` | Kill the sessions the marked rows stand for, after asking. `y` kills; any other key does not. |
+| `alt-delete` | Kill them without asking. |
+| `alt-up`, `alt-down` | Scroll the preview. `alt-pgup` and `alt-pgdown` scroll it by the page. |
 | `esc` | Leave for the session this pane last attached to. Leave outright where there is none, or where another terminal has it. |
 
 The hint line offers only the keys that would do something where the cursor
 stands: no `⌦ kill` where nothing is running, `⏎ start` rather than `⏎ attach`
-where entering means making one, and no `← back` on the ground floor. fzf
-rewrites it per row through the same `focus` transform that sets the preview's
-follow mode, since between turns of the loop nothing of this program is
-running to be asked.
+where entering means making one, and no `← back` on the ground floor.
 
 There is no `ctrl-enter`: a terminal sends the same byte for it as for
-`enter`, and fzf has no name for a key it cannot be told apart from. There is
-no `shift-enter` either, for the same reason: a terminal sends it as a kitty
-keyboard sequence, which fzf does not decode.
+`enter`, and the picker cannot tell two keys apart that arrive as one. There is
+no `shift-enter` or `ctrl-delete` either: a terminal sends them as sequences
+the picker does not decode.
 
 ## One terminal to a session
 
@@ -190,7 +188,7 @@ going back to a session they were never in.
 Beside the list where the terminal is wide, below it where it is not, and left
 out entirely where what remained of the list would be unreadable. A session
 previews as its own scrollback through `zmx history`, at the end of it; a
-repository as its history through `git log --graph`.
+repository as its history through `git log --graph`, from the newest commit.
 
 ## The daemon
 
@@ -221,8 +219,8 @@ Or from source:
 go install github.com/mikluko/zmd@latest
 ```
 
-Needs `zmx` on `PATH`, and `git` for the repository preview. fzf is a library
-here rather than a command, so it does not have to be installed.
+Needs `zmx` on `PATH`, and `git` for the repository preview. The picker is
+drawn by zmd itself, so fzf does not have to be installed.
 
 ## Holding a pane open
 

@@ -33,7 +33,7 @@ func TestMatch(t *testing.T) {
 
 func TestUnderCursorSurvivesResets(t *testing.T) {
 	got := underCursor(dim+"x"+undim+"y", 4)
-	want := cursorBg + "\x1b[1m" + dim + "x" + "\x1b[0m" + cursorBg + "\x1b[1m" + "y  " + "\x1b[0m"
+	want := currentRow + dim + "x" + "\x1b[0m" + currentRow + "y  " + "\x1b[0m"
 	if got != want {
 		t.Errorf("underCursor = %q, want %q", got, want)
 	}

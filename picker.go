@@ -3,17 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // pickItem is a row of the list with what the matcher reads.
@@ -73,6 +72,7 @@ type outcome struct {
 
 type pickModel struct {
 	live  []Session
+	held  *Session // what escape leaves for, nil where there is nothing to go back to
 	repos []string
 	ident map[string]string
 
@@ -82,7 +82,7 @@ type pickModel struct {
 
 	width, height int
 	seq           int
-	preview       string
+	preview       viewport.Model
 	status        string // an error or a notice, shown until the next key
 
 	asking string // an inline yes-or-no question, empty when none is open
@@ -93,8 +93,13 @@ type pickModel struct {
 
 func newPickModel(live []Session, repos []string, ident map[string]string) *pickModel {
 	q := textinput.New()
+	q.PromptStyle = promptStyle
+	q.TextStyle = inputStyle
 	q.Focus()
-	return &pickModel{live: live, repos: repos, ident: ident, query: q, match: newMatcher()}
+	return &pickModel{
+		live: live, held: lastHeld(live), repos: repos, ident: ident,
+		query: q, match: newMatcher(), preview: viewport.New(0, 0),
+	}
 }
 
 func (m *pickModel) top() *level { return m.stack[len(m.stack)-1] }
@@ -205,19 +210,57 @@ func (m *pickModel) fetchPreview() tea.Cmd {
 	return loadPreview(m.current(), m.seq)
 }
 
+// setPreview shows text, at its end where the row follows and at its start
+// where not.
+func (m *pickModel) setPreview(text string) {
+	m.preview.SetContent(strings.TrimRight(strings.ReplaceAll(text, "\r\n", "\n"), "\n"))
+	if m.follows() {
+		m.preview.GotoBottom()
+	} else {
+		m.preview.GotoTop()
+	}
+}
+
+// sizePreview fits the preview to its box, keeping one held at its end there.
+func (m *pickModel) sizePreview() {
+	_, w, h := m.previewBox()
+	bottom := m.preview.AtBottom()
+	m.preview.Width, m.preview.Height = w, h
+	if bottom && m.follows() {
+		m.preview.GotoBottom()
+	}
+}
+
+// follows reports whether the preview anchors at its end: a session's
+// scrollback is read from where it stopped, a place's history from its newest.
+func (m *pickModel) follows() bool {
+	r := m.current()
+	return r != nil && r.session != ""
+}
+
 // loadPreview reads what r previews as off the UI goroutine: a session's
-// scrollback, or a place's git history.
+// scrollback, or the git history of a place git tracks. A read that fails
+// previews as its error.
 func loadPreview(r *row, seq int) tea.Cmd {
 	return func() tea.Msg {
 		var buf bytes.Buffer
+		var err error
 		switch {
 		case r == nil:
 		case r.session != "":
-			history(r.session, &buf)
-		case r.dir != "":
-			out, _ := exec.Command("git", "-C", r.dir, "log", "--color=always", "--graph", "-50",
-				"--format=%C(auto)%h %as%d %s").Output()
-			buf.Write(out)
+			err = history(r.session, &buf)
+		case r.dir != "" && repoRoot(r.dir) != "":
+			cmd := exec.Command("git", "-C", r.dir, "log", "--color=always", "--graph", "-50",
+				"--format=%C(auto)%h %as%d %s")
+			cmd.Stdout = &buf
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if cmd.Run() != nil {
+				err = fmt.Errorf("git log: %s", strings.TrimSpace(stderr.String()))
+			}
+		}
+		if err != nil {
+			return previewMsg{seq: seq, text: errStyle.Render(err.Error())}
 		}
 		return previewMsg{seq: seq, text: buf.String()}
 	}
@@ -231,11 +274,12 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.sizePreview()
 		return m, nil
 
 	case previewMsg:
 		if msg.seq == m.seq {
-			m.preview = msg.text
+			m.setPreview(msg.text)
 		}
 		return m, nil
 
@@ -244,6 +288,7 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.err.Error()
 		}
 		m.live = msg.live
+		m.held = lastHeld(m.live)
 		for _, l := range m.stack {
 			m.rebuild(l)
 		}
@@ -265,21 +310,41 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *pickModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	l := m.top()
+	typed := m.query.Value() != ""
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "esc", "left":
+	case "esc":
+		if m.held != nil {
+			m.result = outcome{name: m.held.Name}
+		}
+		return m, tea.Quit
+	case "left", "backspace":
+		if typed {
+			break
+		}
 		if len(m.stack) > 1 {
 			m.pop()
 			return m, m.fetchPreview()
 		}
-		if msg.String() == "left" {
-			return m, nil
+		return m, nil
+	case "right":
+		if typed {
+			break
 		}
-		if held := lastHeld(m.live); held != nil {
-			m.result = outcome{name: held.Name}
-		}
-		return m, tea.Quit
+		return m.descend()
+	case "alt+up":
+		m.preview.ScrollUp(1)
+		return m, nil
+	case "alt+down":
+		m.preview.ScrollDown(1)
+		return m, nil
+	case "alt+pgup":
+		m.preview.PageUp()
+		return m, nil
+	case "alt+pgdown":
+		m.preview.PageDown()
+		return m, nil
 	case "up", "ctrl+p":
 		return m.move(-1)
 	case "down", "ctrl+n":
@@ -296,7 +361,8 @@ func (m *pickModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m.move(1)
-	case "enter", "right":
+	case "enter":
+		l.marked = map[string]bool{}
 		return m.descend()
 	case "alt+enter":
 		if r := m.current(); r != nil && r.dir != "" {
@@ -404,155 +470,33 @@ func (m *pickModel) move(delta int) (tea.Model, tea.Cmd) {
 	return m, m.fetchPreview()
 }
 
-var (
-	matchStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
-	gutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-	markStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	hintStyle   = lipgloss.NewStyle().Faint(true)
-	askStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	sideBorder  = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderLeft(true)
-	underBorder = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(true)
+// layout is where the preview stands against the list.
+type layout int
+
+const (
+	layoutNone layout = iota
+	layoutBeside
+	layoutAbove
 )
 
-func (m *pickModel) View() string {
-	if m.width == 0 {
-		return ""
-	}
-	body := m.height - 2
-	var main string
-	switch {
-	case m.width >= 120:
-		pw := m.width * 55 / 100
-		main = lipgloss.JoinHorizontal(lipgloss.Top,
-			m.listView(m.width-pw, body),
-			sideBorder.Height(body).Render(previewView(m.preview, pw-1, body)))
-	case m.width >= 80 && m.height >= 15:
-		ph := body / 2
-		main = lipgloss.JoinVertical(lipgloss.Left,
-			m.listView(m.width, body-ph),
-			underBorder.Width(m.width).Render(previewView(m.preview, m.width, ph-1)))
-	default:
-		main = m.listView(m.width, body)
-	}
-	return m.query.View() + "\n" + main + "\n" + m.footer()
-}
-
-// footer is the open question, an error, or the keys that would do something
-// where the cursor stands.
-func (m *pickModel) footer() string {
-	switch {
-	case m.asking != "":
-		return askStyle.Render(m.asking + " y/N")
-	case m.status != "":
-		return errStyle.Render(m.status)
-	}
-	var keys string
-	if r := m.current(); r != nil && r.dir != "" {
-		keys = hints(r.state())
-	}
-	if len(m.stack) > 1 {
-		keys += "  ⎋ back"
-	} else if lastHeld(m.live) != nil {
-		keys += "  ⎋ leave"
-	}
-	if m.top().rung.view != viewRepos {
-		keys += "  ⌃g repos"
-	}
-	if n := len(m.top().marked); n > 0 {
-		keys += "  " + strconv.Itoa(n) + " marked"
-	}
-	return hintStyle.Render(strings.TrimSpace(keys))
-}
-
-func (m *pickModel) listView(width, height int) string {
-	l := m.top()
-	if l.cursor < l.offset {
-		l.offset = l.cursor
-	}
-	if l.cursor >= l.offset+height {
-		l.offset = l.cursor - height + 1
-	}
-	lines := make([]string, 0, height)
-	if len(l.items) == 0 {
-		lines = append(lines, hintStyle.Render("  "+empty(l.rung)))
-	}
-	for i := l.offset; i < len(l.hits) && len(lines) < height; i++ {
-		h := l.hits[i]
-		it := l.items[h.item]
-		gutter := " "
-		switch {
-		case i == l.cursor:
-			gutter = gutterStyle.Render("▌")
-		case l.marked[rowKey(it.row)]:
-			gutter = markStyle.Render("▐")
-		}
-		status := it.row.status
-		if status == "" {
-			status = strings.Repeat(" ", statusWidth)
-		}
-		line := ansi.Truncate(status+highlight(it.text, h.pos), width-1, "…")
-		if i == l.cursor {
-			line = underCursor(line, width-1)
-		}
-		lines = append(lines, gutter+line)
-	}
-	for len(lines) < height {
-		lines = append(lines, "")
-	}
-	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
-}
-
-// cursorBg is the cursor row's background, as the escape that sets it.
-const cursorBg = "\x1b[48;5;238m"
-
-// underCursor paints line's background across width cells.
+// previewLayout returns where the preview goes in a terminal this size.
 //
-// The line carries its own SGR resets, from the status column's dim and from
-// the match highlight, and each one would end a style set only once at the
-// start; so it is set again after every reset.
-func underCursor(line string, width int) string {
-	const style = cursorBg + "\x1b[1m"
-	pad := max(width-ansi.StringWidth(line), 0)
-	line = strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+style)
-	line = strings.ReplaceAll(line, "\x1b[m", "\x1b[m"+style)
-	return style + line + strings.Repeat(" ", pad) + "\x1b[0m"
+// The split follows the shape of the space rather than a preference: a wide
+// terminal has room beside the list, a narrower one only above it, and one too
+// small for both keeps the list.
+func previewLayout(cols, rows int) layout {
+	switch {
+	case cols < 80 || rows < 15:
+		return layoutNone
+	case cols >= 120:
+		return layoutBeside
+	default:
+		return layoutAbove
+	}
 }
 
-// highlight marks the runes of text at the matched positions.
-func highlight(text string, pos []int) string {
-	if len(pos) == 0 {
-		return text
-	}
-	at := make(map[int]bool, len(pos))
-	for _, p := range pos {
-		at[p] = true
-	}
-	var b strings.Builder
-	for i, r := range []rune(text) {
-		if at[i] {
-			b.WriteString(matchStyle.Render(string(r)))
-		} else {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// previewView is the end of the text, cut to the box it is drawn in.
-func previewView(text string, width, height int) string {
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
-	if len(lines) > height {
-		lines = lines[len(lines)-height:]
-	}
-	for i, l := range lines {
-		lines[i] = ansi.Truncate(strings.TrimRight(l, "\r"), width, "")
-	}
-	return strings.Join(lines, "\n")
-}
-
-// pick2 is the prototype picker, drawn by this process rather than by fzf.
-func pick2() error {
+// run presents the picker and attaches to what it answers.
+func run() error {
 	start, err := os.Getwd()
 	if err != nil {
 		return err
@@ -567,10 +511,14 @@ func pick2() error {
 		return err
 	}
 
+	// The ground floor is every session there is, with the cursor on what the
+	// pane last held, so its peers are around it. A pane that has held
+	// nothing has only where it stands to go on, so it opens one rung in,
+	// narrowed to that, on the offer of a session there.
 	m := newPickModel(live, repos, ident)
 	m.push(rung{view: viewSessions})
-	if held := lastHeld(live); held != nil {
-		m.top().cursor = max(named(rowsOf(m.top()), held.Name), 0)
+	if m.held != nil {
+		m.top().cursor = max(named(rowsOf(m.top()), m.held.Name), 0)
 	} else if at := filepath.Clean(start); under(home, at) {
 		m.push(rung{view: viewSessions, dir: at, name: placeName(at, ident)})
 		m.top().cursor = len(m.top().hits) - 1
@@ -589,6 +537,7 @@ func pick2() error {
 			return err
 		}
 	}
+	// Recorded before the exec, since there is no returning from it.
 	recordLast(res.name)
 	return attach(res.name, res.dir)
 }

@@ -3,14 +3,12 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/go-git/go-git/v5/config"
-	fzf "github.com/junegunn/fzf/src"
 )
 
 // scene builds a tree holding two repositories, a worktree of one of them and
@@ -225,44 +223,17 @@ func TestRepositoriesFindsReposAndWorktrees(t *testing.T) {
 func TestPreviewLayoutFollowsTheShapeOfTheTerminal(t *testing.T) {
 	for _, c := range []struct {
 		cols, rows int
-		want       string
+		want       layout
 	}{
-		{200, 50, "right"},
-		{120, 40, "right"},
-		{119, 40, "up"},
-		{80, 24, "up"},
-		{79, 40, ""},
-		{200, 14, ""},
+		{200, 50, layoutBeside},
+		{120, 40, layoutBeside},
+		{119, 40, layoutAbove},
+		{80, 24, layoutAbove},
+		{79, 40, layoutNone},
+		{200, 14, layoutNone},
 	} {
-		got := previewLayout(c.cols, c.rows)
-		switch {
-		case c.want == "" && got != "":
-			t.Errorf("%dx%d previews as %q, want none", c.cols, c.rows, got)
-		case c.want != "" && !strings.HasPrefix(got, c.want):
-			t.Errorf("%dx%d previews as %q, want %s", c.cols, c.rows, got, c.want)
-		}
-	}
-	if !strings.Contains(previewLayout(200, 50), "<100(up") {
-		t.Error("the wide layout carries no alternative for a narrowed window")
-	}
-}
-
-// Every key binding, preview window and expected key is a string fzf parses
-// rather than anything the compiler sees, so a typo in one surfaces only when
-// the picker is opened. Parsing them here is what opens it.
-func TestThePickerArgumentsParse(t *testing.T) {
-	for _, c := range []struct {
-		what string
-		args []string
-	}{
-		{"the sessions rung", args(rung{}, "", "  ⌃g repos  ⎋ leave", 2, previewLayout(200, 50))},
-		{"the repositories rung", args(rung{view: viewRepos}, "", "  ← back", -1, previewLayout(100, 40))},
-		{"a checkout's rung, under a query", args(rung{view: viewCheckouts, name: "acme/api"}, "engine", "  ← back", -1, "")},
-
-		{"a question", confirmArgs("kill one?")},
-	} {
-		if _, err := fzf.ParseOptions(true, c.args); err != nil {
-			t.Errorf("%s: %v", c.what, err)
+		if got := previewLayout(c.cols, c.rows); got != c.want {
+			t.Errorf("%dx%d previews as %d, want %d", c.cols, c.rows, got, c.want)
 		}
 	}
 }
@@ -430,8 +401,7 @@ func TestHintsOfferOnlyWhatTheKeyWouldDo(t *testing.T) {
 	}
 }
 
-// The letters the preview and the hint line branch on, which fzf reads and
-// this program is not running to be asked for.
+// The letters the hint line branches on.
 func TestRowStateSaysWhatIsRunningAndWhoHasIt(t *testing.T) {
 	for _, c := range []struct {
 		what string
@@ -510,30 +480,6 @@ func TestTallyCountsWhatIsBelow(t *testing.T) {
 	}{{0, " "}, {-1, " "}, {1, "1"}, {9, "9"}, {10, "+"}, {40, "+"}} {
 		if got := tally(c.n); got != c.want {
 			t.Errorf("tally(%d) = %q, want %q", c.n, got, c.want)
-		}
-	}
-}
-
-// fzf reports only what it is told to expect, so a key the loop acts on and
-// the arguments do not name is a key that does nothing at all — however
-// plainly the hint line offers it.
-func TestEveryKeyTheLoopActsOnIsExpected(t *testing.T) {
-	body, err := os.ReadFile("ui.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	named := map[string]string{
-		"keyNew": keyNew, "keyRepos": keyRepos,
-		"keyKill": keyKill, "keyKillHard": keyKillHard,
-	}
-	for ident, key := range named {
-		acted := regexp.MustCompile(`case [^\n]*\b` + ident + `\b`).Match(body)
-		listed := slices.Contains(expected, key)
-		if acted && !listed {
-			t.Errorf("the loop acts on %s (%q) and the picker never reports it", ident, key)
-		}
-		if listed && !acted {
-			t.Errorf("%s (%q) is expected and the loop does nothing with it", ident, key)
 		}
 	}
 }
@@ -636,41 +582,6 @@ func TestWhereCellsDoNotSayThePathTwice(t *testing.T) {
 	}
 	if got[2] != "~" {
 		t.Errorf("home gave %q as the path", got[2])
-	}
-}
-
-// Escape answers the question rather than dismissing it. There is no third
-// thing a yes-or-no can mean, and a caller that had to tell a dismissal from
-// a no would write the same branch every time — and one that forgot would
-// take the whole picker down over a declined confirmation.
-func TestConfirmTreatsADismissalAsNo(t *testing.T) {
-	body, err := os.ReadFile("ui.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(body)
-
-	// confirm swallows it, so it is named exactly once in there.
-	if !strings.Contains(src, "func confirm(q string) (bool, error) {") {
-		t.Fatal("confirm is not where this test thinks it is")
-	}
-	fn := src[strings.Index(src, "func confirm(q string) (bool, error) {"):]
-	fn = fn[:strings.Index(fn, "\n}\n")]
-	if !strings.Contains(fn, "errors.Is(err, errCancelled)") {
-		t.Error("confirm does not read a dismissal as no")
-	}
-
-	// And no caller has to know about it, which is the point.
-	for _, caller := range []string{"confirm(question(names))", "confirm(takes(r.cells[0]))"} {
-		i := strings.Index(src, caller)
-		if i < 0 {
-			t.Errorf("no call site %q", caller)
-			continue
-		}
-		after := src[i : i+200]
-		if strings.Contains(after, "errCancelled") {
-			t.Errorf("%s still branches on a dismissal", caller)
-		}
 	}
 }
 
