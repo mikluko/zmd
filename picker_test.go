@@ -182,7 +182,7 @@ func TestEnterOnAnIdleCheckoutStartsASessionThere(t *testing.T) {
 		}
 	}
 	m.relive(rest)
-	rel, _ := filepath.Rel(root, api)
+	rel := shorten(api)
 	seekLabel(t, m, rel)
 	m.Update(keyEnter)
 	if m.result.dir != api || !strings.HasPrefix(m.result.name, "zmd.") {
@@ -195,7 +195,7 @@ func TestEnterOnAnIdleCheckoutStartsASessionThere(t *testing.T) {
 func TestEnterOnABusyCheckoutListsItsSessions(t *testing.T) {
 	m, root := sceneModel(t, modeCheckouts)
 	engine, _, _, _ := sceneDirs(root)
-	rel, _ := filepath.Rel(root, engine)
+	rel := shorten(engine)
 	seekLabel(t, m, rel)
 	m.Update(keyEnter)
 	if m.mode != modeSessions || m.result.name != "" {
@@ -211,8 +211,9 @@ func TestEnterOnABusyCheckoutListsItsSessions(t *testing.T) {
 		t.Errorf("the offer starts in %q, want %q", m.result.dir, engine)
 	}
 
-	m, _ = sceneModel(t, modeCheckouts)
-	seekLabel(t, m, rel)
+	m, root = sceneModel(t, modeCheckouts)
+	engine, _, _, _ = sceneDirs(root)
+	seekLabel(t, m, shorten(engine))
 	m.Update(keyEnter)
 	press(m, keyTab)
 	if m.mode != modeCheckouts || m.panes[modeSessions].scope != "" {

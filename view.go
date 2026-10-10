@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
 // The picker has three views, which tab cycles through. The checkouts view is
@@ -109,7 +108,7 @@ func fileRows(root, home string, live []Session, dirs []string, seen visits) []r
 //
 // Checkouts worked in lead, the latest first, since that is where the next
 // session most likely goes; the rest follow by path.
-func checkoutRows(home string, live []Session, repos []string, seen visits) []row {
+func checkoutRows(live []Session, repos []string, seen visits) []row {
 	latest := map[string]int64{}
 	for dir, v := range seen {
 		if c := checkoutOf(dir, repos); c != "" && v.Last > latest[c] {
@@ -121,17 +120,13 @@ func checkoutRows(home string, live []Session, repos []string, seen visits) []ro
 	for _, dir := range repos {
 		dir = filepath.Clean(dir)
 		found := owned(dir, live, repos)
-		rel, err := filepath.Rel(home, dir)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			rel = dir
-		}
 		out = append(out, row{
 			kind:   kindCheckout,
 			dir:    dir,
 			found:  found,
 			count:  len(found),
 			status: status(dir, found),
-			cells:  []string{rel},
+			cells:  []string{shorten(dir)},
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {

@@ -137,7 +137,7 @@ func TestCheckoutRowsOwnTheirSessions(t *testing.T) {
 	engine, tree, api, _ := sceneDirs(root)
 	now := time.Now()
 	seen := visits{filepath.Join(api, "sub"): {Rank: 1, Last: now.Unix()}}
-	rows := checkoutRows(root, live, []string{engine, tree, api}, seen)
+	rows := checkoutRows(live, []string{engine, tree, api}, seen)
 	if len(rows) != 3 || rows[0].dir != api {
 		t.Fatalf("rows %q, want three with api first, worked in", labelsOf(rows))
 	}

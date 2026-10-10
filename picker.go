@@ -210,7 +210,7 @@ func (m *pickModel) build(p *pane) {
 	}
 	switch p.mode {
 	case modeCheckouts:
-		p.rows = checkoutRows(m.home, m.live, m.repos, m.seen)
+		p.rows = checkoutRows(m.live, m.repos, m.seen)
 	case modeSessions:
 		if p.scope == "" {
 			p.rows = sessionRows(m.live, m.attached)

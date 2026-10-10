@@ -61,7 +61,7 @@ not things a query looks for, and drop out while one is typed.
 
 ```
  ●   retry-bug               ~/src/acme/gateway
-○  Forge/acme/api
+○  ~/Forge/acme/api
  ↑↑↑
  │││
  ││└─ reserved
