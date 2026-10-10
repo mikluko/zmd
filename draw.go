@@ -273,7 +273,7 @@ func (m *pickModel) rowsView(width, height int) []string {
 		}
 		shown := highlight(text, ln.pos, on)
 		if ln.kid < 0 && p.mode == modeDirs {
-			shown = keepTail(shown, width-1-1-len(lead)-statusWidth)
+			shown = keepTail(shown, width-1-1-ansi.StringWidth(lead)-statusWidth)
 		}
 		body := ansi.Truncate(marker+ruleStyle.Render(lead)+status+shown, width-1, "…")
 		if on {

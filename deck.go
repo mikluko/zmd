@@ -20,7 +20,8 @@ import (
 )
 
 // The daemon holds what a picker would otherwise work out for itself, and
-// tells an open picker when what it shows has moved.
+// announces over Watch when what it holds has moved. No picker subscribes:
+// an open one polls `zmx list` itself and asks for Places again on a timer.
 //
 // Walking the home directory costs a quarter of a second, and a picker paid
 // it on every detach before drawing a single row. Nothing about the walk is

@@ -18,13 +18,14 @@ the picker reopens in whichever you switched to last.
 
 ```
 repos    every repository below ~ that is not a worktree
-dirs     directories outside any repository: where sessions stand, where
-         sessions have been, and where the picker was started
+dirs     everything else: where sessions stand, where sessions have been,
+         and where the picker was started
 ```
 
 The two never overlap. A session counts against the repository it stands in,
-worktrees included, and only a session outside every repository gets a
-directory of its own.
+worktrees included, and only a session outside every repository the walk found
+gets a directory of its own. A repository the walk never reached, outside `~`,
+is one of those directories.
 
 **A place opens in place.** `enter` on it lists what it holds, indented under
 it, and `enter` again closes it:
