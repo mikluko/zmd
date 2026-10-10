@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -65,25 +62,6 @@ func pollSessions() tea.Cmd {
 	})
 }
 
-// reposMsg is the repositories, walked or asked for again.
-type reposMsg struct {
-	repos []string
-	ident map[string]string
-}
-
-// rewalk is how often the picker asks for the repositories again, so one
-// cloned while it is up shows. A daemon answers at once; without one this is
-// a walk of ~, which is why it is not every second.
-const rewalk = 30 * time.Second
-
-// pollRepos asks for the repositories below home once rewalk has passed.
-func pollRepos(home string) tea.Cmd {
-	return tea.Tick(rewalk, func(time.Time) tea.Msg {
-		repos, ident := walked(context.Background(), dialDeck(), home)
-		return reposMsg{repos: repos, ident: ident}
-	})
-}
-
 // killedMsg reports a kill and what is running after it.
 type killedMsg struct {
 	live  []Session
@@ -103,9 +81,7 @@ type outcome struct {
 type pickModel struct {
 	live     []Session
 	held     *Session // what escape leaves for, nil where there is nothing to go back to
-	repos    []string
-	ident    map[string]string
-	home     string // where the picker stands on opening, and repositories are walked from
+	home     string   // where the picker stands on opening
 	seen     visits
 	attached map[string]int64
 
@@ -126,7 +102,7 @@ type pickModel struct {
 	result outcome
 }
 
-func newPickModel(live []Session, repos []string, ident map[string]string, home string, seen visits, attached map[string]int64, open mode) *pickModel {
+func newPickModel(live []Session, home string, seen visits, attached map[string]int64, open mode) *pickModel {
 	q := textinput.New()
 	styles := textinput.DefaultDarkStyles()
 	styles.Focused.Prompt = promptStyle
@@ -134,7 +110,7 @@ func newPickModel(live []Session, repos []string, ident map[string]string, home 
 	q.SetStyles(styles)
 	q.Focus()
 	m := &pickModel{
-		live: live, held: lastHeld(live), repos: repos, ident: ident,
+		live: live, held: lastHeld(live),
 		home: home, seen: seen, attached: attached,
 		query: q, match: newMatcher(), preview: viewport.New(),
 	}
@@ -206,9 +182,9 @@ func (m *pickModel) build(p *pane) {
 		keep = rowKey(*r)
 	}
 	if p.mode == modeFiles {
-		p.rows = fileRows(p.root, m.home, m.live, p.dirs, m.ident, m.seen)
+		p.rows = fileRows(p.root, m.home, m.live, p.dirs, m.seen)
 	} else {
-		p.rows = sessionRows(m.live, m.attached, m.ident)
+		p.rows = sessionRows(m.live, m.attached)
 	}
 	present := map[string]bool{}
 	for _, r := range p.rows {
@@ -227,8 +203,8 @@ func (m *pickModel) build(p *pane) {
 }
 
 // rowText is what each row shows, plain. Sessions are aligned against each
-// other; a directory is its path, then the name git gives it where it has
-// one, unaligned, since one deep path would otherwise push every name aside.
+// other; a directory is its path alone, since one deep path would otherwise
+// push every session's columns aside.
 func rowText(rows []row) []string {
 	out := make([]string, len(rows))
 	var cells [][]string
@@ -236,9 +212,6 @@ func rowText(rows []row) []string {
 	for i, r := range rows {
 		if r.kind == kindDir {
 			out[i] = r.cells[0]
-			if r.cells[1] != "" {
-				out[i] += "  " + r.cells[1]
-			}
 			continue
 		}
 		cells = append(cells, r.cells)
@@ -388,11 +361,7 @@ func listDir(dir string, w *bytes.Buffer) error {
 }
 
 func (m *pickModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, m.fetchPreview(), pollSessions()}
-	if m.home != "" {
-		cmds = append(cmds, pollRepos(m.home))
-	}
-	return tea.Batch(cmds...)
+	return tea.Batch(textinput.Blink, m.fetchPreview(), pollSessions())
 }
 
 // relive rebuilds every view over live, keeping each cursor where it was. The
@@ -431,14 +400,6 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.relive(msg.live)
 		return m, m.fetchPreview()
-
-	case reposMsg:
-		if slices.Equal(msg.repos, m.repos) && maps.Equal(msg.ident, m.ident) {
-			return m, pollRepos(m.home)
-		}
-		m.repos, m.ident = msg.repos, msg.ident
-		m.relive(m.live)
-		return m, pollRepos(m.home)
 
 	case liveMsg:
 		if msg.err != nil {
@@ -720,7 +681,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	repos, ident := walked(context.Background(), dialDeck(), home)
 	live, err := sessions()
 	if err != nil {
 		return err
@@ -731,7 +691,7 @@ func run() error {
 		seen = loadVisits()
 	}
 
-	m := newPickModel(live, repos, ident, home, seen, loadAttaches(), loadMode())
+	m := newPickModel(live, home, seen, loadAttaches(), loadMode())
 	m.opening()
 
 	final, err := tea.NewProgram(m).Run()

@@ -21,8 +21,8 @@ const usage = `zmd selects and starts zmx sessions.
 
 Usage:
   zmd            Pick a session, or a directory to start one in, and attach
-  zmd daemon     Hold the walk warm, and learn directories from where
-                 sessions cd to
+  zmd daemon     Learn which directories are worked in from where sessions
+                 cd to
   zmd version    Print the version
 
 The picker has two views. The filesystem stands in one directory, opening at

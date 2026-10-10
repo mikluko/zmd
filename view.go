@@ -10,8 +10,8 @@ import (
 // The picker has two views. In the filesystem view it stands in one directory,
 // opening at ~, and lists the sessions standing there, the offer of another,
 // and the directories below to treeDepth levels; entering a directory stands
-// in it, and `..` stands in the one above. Repositories are directories with a
-// mark. The sessions view is every session, whatever directory it stands in.
+// in it, and `..` stands in the one above. Repositories and worktrees
+// are directories with marks of their own. The sessions view is every session, whatever directory it stands in.
 type mode int
 
 const (
@@ -47,11 +47,11 @@ const newSession = "<new session>"
 // Directories worked in lead, the latest first, since that is where the next
 // session most likely goes; the rest follow by path. Each counts the sessions
 // standing in it or below it, so activity deep in a tree shows from its top.
-func fileRows(root, home string, live []Session, dirs []string, ident map[string]string, seen visits) []row {
+func fileRows(root, home string, live []Session, dirs []string, seen visits) []row {
 	root = filepath.Clean(root)
 	var out []row
 	if root != filepath.Clean(home) && root != string(filepath.Separator) {
-		out = append(out, row{kind: kindUp, dir: filepath.Dir(root), status: "   ", cells: []string{"..", ""}})
+		out = append(out, row{kind: kindUp, dir: filepath.Dir(root), status: "   ", cells: []string{".."}})
 	}
 	var here []Session
 	for _, s := range sortedSessions(live) {
@@ -60,9 +60,9 @@ func fileRows(root, home string, live []Session, dirs []string, ident map[string
 		}
 	}
 	for _, s := range here {
-		out = append(out, sessionRow(s, "", ""))
+		out = append(out, sessionRow(s, ""))
 	}
-	out = append(out, row{kind: kindOffer, dir: root, status: "   ", cells: []string{newSession, ""}})
+	out = append(out, row{kind: kindOffer, dir: root, status: "   ", cells: []string{newSession}})
 
 	var below []row
 	for _, dir := range dirs {
@@ -82,7 +82,7 @@ func fileRows(root, home string, live []Session, dirs []string, ident map[string
 			found:  found,
 			count:  len(found),
 			status: mark(dir) + tally(len(found)) + " ",
-			cells:  []string{rel, ident[dir]},
+			cells:  []string{rel},
 		})
 	}
 	sort.SliceStable(below, func(i, j int) bool {
@@ -100,7 +100,7 @@ func fileRows(root, home string, live []Session, dirs []string, ident map[string
 //
 // What an agent in a session is doing will rank ahead of both once something
 // reports it; nothing does yet.
-func sessionRows(live []Session, attached map[string]int64, ident map[string]string) []row {
+func sessionRows(live []Session, attached map[string]int64) []row {
 	sorted := append([]Session(nil), live...)
 	when := func(s Session) int64 {
 		if t, ok := attached[s.Name]; ok {
@@ -116,18 +116,13 @@ func sessionRows(live []Session, attached map[string]int64, ident map[string]str
 	})
 	out := make([]row, 0, len(sorted))
 	for _, s := range sorted {
-		name, path := placeName(s.Dir, ident), shorten(s.Dir)
-		if name == path {
-			name = ""
-		}
-		out = append(out, sessionRow(s, name, path))
+		out = append(out, sessionRow(s, shorten(s.Dir)))
 	}
 	return out
 }
 
-// sessionRow is a row for s, with what git calls where it stands and that
-// path where the view needs to say so.
-func sessionRow(s Session, name, path string) row {
+// sessionRow is a row for s, saying where it stands where the view needs to.
+func sessionRow(s Session, path string) row {
 	return row{
 		kind:    kindSession,
 		dir:     s.Dir,
@@ -135,7 +130,7 @@ func sessionRow(s Session, name, path string) row {
 		session: s.Name,
 		held:    s.heldElsewhere(),
 		status:  status(s.Dir, []Session{s}),
-		cells:   []string{sessionLabel(s), name, path},
+		cells:   []string{sessionLabel(s), path},
 	}
 }
 

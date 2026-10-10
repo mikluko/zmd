@@ -281,11 +281,9 @@ func (m *pickModel) rowsView(width, height int) []string {
 		if status == "" {
 			status = strings.Repeat(" ", statusWidth)
 		}
-		var shown string
+		shown := highlight(p.text[ln.row], ln.pos, on)
 		if r.kind == kindDir {
-			shown = dirText(p.text[ln.row], len([]rune(r.cells[0])), ln.pos, on, width-1-1-statusWidth)
-		} else {
-			shown = highlight(p.text[ln.row], ln.pos, on)
+			shown = keepTail(shown, width-1-1-statusWidth)
 		}
 		body := ansi.Truncate(marker+status+shown, width-1, "…")
 		if on {
@@ -298,24 +296,6 @@ func (m *pickModel) rowsView(width, height int) []string {
 		lines = append(lines, "")
 	}
 	return lines[:height]
-}
-
-// dirText is a directory row in width cells: its path, cut from the left
-// where it has to be, then the name after it, which is never cut. n is the
-// path's length in runes, and pos where the query landed in the whole.
-func dirText(text string, n int, pos []int, on bool, width int) string {
-	runes := []rune(text)
-	var head, tail []int
-	for _, p := range pos {
-		if p < n {
-			head = append(head, p)
-		} else {
-			tail = append(tail, p-n)
-		}
-	}
-	name := highlight(string(runes[n:]), tail, on)
-	path := keepTail(highlight(string(runes[:n]), head, on), width-ansi.StringWidth(name))
-	return path + name
 }
 
 // keepTail cuts s to width cells from the left, so a path keeps the end that

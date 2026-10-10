@@ -82,17 +82,6 @@ func TestStatusIsAlwaysThreeCells(t *testing.T) {
 		}
 	}
 
-	// Bright is the repository and dim is the worktree cut from it, which is
-	// the whole of what tells them apart.
-	if strings.Contains(status(repo, nil), dim) {
-		t.Error("a repository was dimmed")
-	}
-	if !strings.Contains(status(tree, nil), dim) {
-		t.Error("a worktree was not dimmed")
-	}
-	if strings.Contains(status(plain, nil), checkout) {
-		t.Error("a directory git knows nothing about was marked as a checkout")
-	}
 }
 
 // visible strips the SGR sequences, leaving what occupies a cell.
@@ -235,28 +224,6 @@ func column(line, cell string) int {
 	return utf8.RuneCountInString(line[:strings.Index(line, cell)])
 }
 
-// A place is its directory under whatever contains it, and a worktree is
-// contained by the repository it was cut from rather than by `worktrees`.
-func TestPlaceNameIsTheThingUnderItsContainer(t *testing.T) {
-	root := t.TempDir()
-	repo := repoAt(t, filepath.Join(root, "gateway"))
-	tree := worktreeAt(t, repo, "fix-retry",
-		filepath.Join(repo, ".claude", "worktrees", "fix-retry"))
-
-	if got, want := placeName(repo, nil), filepath.Base(root)+"/gateway"; got != want {
-		t.Errorf("a repository named %q, want %q", got, want)
-	}
-	if got, want := placeName(tree, nil), "gateway/fix-retry"; got != want {
-		t.Errorf("a worktree named %q, want %q", got, want)
-	}
-	if got := placeName("/etc/nginx", nil); got != "etc/nginx" {
-		t.Errorf("a directory outside home named %q", got)
-	}
-	if got := placeName("/", nil); got != "/" {
-		t.Errorf("the root named %q", got)
-	}
-}
-
 // A name is an address. It has to be unique among what is running, say where
 // it came from, and carry none of the separator zmx cannot hold in a socket
 // name.
@@ -288,43 +255,6 @@ func TestSessionLabelPrefersWhatTheLabelsSay(t *testing.T) {
 	}
 	if got := sessionLabel(Session{Name: "harbor-41"}); got != "harbor-41" {
 		t.Errorf("an unlabelled session read as %q, want its name", got)
-	}
-}
-
-// A checkout goes by what git says it is. The path is where it happens to
-// sit: a directory called `uptime-com` can hold `acme/workspace`.
-func TestPlaceNameReadsTheRepositoryRatherThanThePath(t *testing.T) {
-	root := t.TempDir()
-	repo := repoAt(t, filepath.Join(root, "some-directory"))
-	tree := worktreeAt(t, repo, "w",
-		filepath.Join(repo, ".claude", "worktrees", "api-rebase-517"))
-	ident := map[string]string{repo: "acme/api"}
-
-	if got := placeName(repo, ident); got != "acme/api" {
-		t.Errorf("a checkout named %q, want what its remote says", got)
-	}
-	if got := placeName(tree, ident); got != "acme/api/rebase-517" {
-		t.Errorf("a worktree named %q", got)
-	}
-	// Nothing known about it: the path is all there is to go on.
-	if got, want := placeName(repo, nil), filepath.Base(root)+"/some-directory"; got != want {
-		t.Errorf("a checkout with no remote named %q, want %q", got, want)
-	}
-}
-
-// A worktree's basename carries its repository's name as a prefix, which is
-// how the tools that cut them name them, and repeating it says nothing.
-func TestTrimRepoTakesThePrefixOffAWorktree(t *testing.T) {
-	for _, c := range []struct{ base, ident, want string }{
-		{"api-rebase-517", "acme/api", "rebase-517"},
-		{"api-rebase-517", "api", "rebase-517"},
-		{"something-else", "acme/api", "something-else"},
-		{"api-", "acme/api", "api-"},
-		{"api", "acme/api", "api"},
-	} {
-		if got := trimRepo(c.base, c.ident); got != c.want {
-			t.Errorf("trimRepo(%q, %q) = %q, want %q", c.base, c.ident, got, c.want)
-		}
 	}
 }
 

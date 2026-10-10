@@ -64,7 +64,7 @@ func TestFileRowsStandingSomewhere(t *testing.T) {
 		api:   {Rank: 1, Last: now.Unix()},
 	}
 	src := filepath.Join(root, "src")
-	rows := fileRows(src, root, live, tree(src, treeDepth, nil), nil, seen)
+	rows := fileRows(src, root, live, tree(src, treeDepth, nil), seen)
 	got := labelsOf(rows)
 	if got[0] != ".." || got[1] != newSession || got[2] != "acme/api" {
 		t.Fatalf("rows %q, want .., the offer, then acme/api as the latest worked in", got)
@@ -80,7 +80,7 @@ func TestFileRowsStandingSomewhere(t *testing.T) {
 func TestFileRowsAtHome(t *testing.T) {
 	root, live := scene(t)
 	live = append(live, Session{Name: "athome", Dir: root, Clients: "0"})
-	got := labelsOf(fileRows(root, root, live, nil, nil, visits{}))
+	got := labelsOf(fileRows(root, root, live, nil, visits{}))
 	if len(got) < 2 || got[0] != "athome" || got[1] != newSession {
 		t.Errorf("rows %q, want the session at home, then the offer", got)
 	}
@@ -94,7 +94,7 @@ func TestSessionRowsLatestAttachedFirst(t *testing.T) {
 		{Name: "young", Created: 300},
 		{Name: "attached", Created: 50},
 	}
-	got := labelsOf(sessionRows(live, map[string]int64{"attached": 500}, nil))
+	got := labelsOf(sessionRows(live, map[string]int64{"attached": 500}))
 	if strings.Join(got, " ") != "attached young old" {
 		t.Errorf("order %q", got)
 	}
@@ -110,6 +110,22 @@ func TestTreeLeavesBundlesOut(t *testing.T) {
 	for _, d := range tree(root, 4, nil) {
 		if strings.Contains(d, ".app") {
 			t.Errorf("%s is listed", d)
+		}
+	}
+}
+
+// A repository and a worktree carry marks of their own, and a directory
+// inside either carries none.
+func TestMarksTellARepositoryFromAWorktree(t *testing.T) {
+	root, _ := scene(t)
+	engine, tree, _, notes := sceneDirs(root)
+	sub := filepath.Join(engine, "internal")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for dir, want := range map[string]string{engine: repository, tree: worktree, sub: " ", notes: " "} {
+		if got := mark(dir); got != want {
+			t.Errorf("mark(%s) = %q, want %q", filepath.Base(dir), got, want)
 		}
 	}
 }

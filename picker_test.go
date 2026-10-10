@@ -24,7 +24,7 @@ func sceneModel(t *testing.T, open mode) (*pickModel, string) {
 			live[i].Title = "review-pr"
 		}
 	}
-	m := newPickModel(live, nil, map[string]string{}, root, visits{}, map[string]int64{}, open)
+	m := newPickModel(live, root, visits{}, map[string]int64{}, open)
 	return m, root
 }
 
@@ -248,7 +248,7 @@ func TestOpeningLandsOnTheHeldSession(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	root, live := scene(t)
 	recordLast("src.acme.engine+review")
-	m := newPickModel(live, nil, map[string]string{}, root, visits{}, map[string]int64{}, modeSessions)
+	m := newPickModel(live, root, visits{}, map[string]int64{}, modeSessions)
 	m.opening()
 	if r := m.current(); r == nil || r.session != "src.acme.engine+review" {
 		t.Errorf("opened on %+v", r)
@@ -472,15 +472,5 @@ func TestPageMovesAScreenful(t *testing.T) {
 	}
 	if m.top().cursor != 0 {
 		t.Errorf("PgUp past the start: cursor %d, want 0", m.top().cursor)
-	}
-}
-
-// A directory row cut to fit keeps the name git gives it whole, and the end of
-// its path.
-func TestADirectoryRowKeepsItsNameAndPathEnd(t *testing.T) {
-	path := "Forge/uptime-com/up2-checks-http"
-	got := ansi.Strip(dirText(path+"  uptime-com/up2-checks-http", len(path), nil, false, 40))
-	if !strings.HasSuffix(got, "-http  uptime-com/up2-checks-http") || !strings.HasPrefix(got, "…") || ansi.StringWidth(got) != 40 {
-		t.Errorf("dirText = %q", got)
 	}
 }

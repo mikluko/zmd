@@ -25,15 +25,15 @@ below it, four levels down:
      ..                                  enter: stand in the directory above
    ● retry-bug
      <new session>                       enter: start a session here
- 2 api  acme/api                         enter: stand in it
+ 2 api                                   enter: stand in it
    api/internal
-   web  acme/web
+   web
 ```
 
 `enter` on a directory stands in it, and `..` stands in the one above. A
 directory counts every session standing in it or below it, so work deep in a
-tree shows from its top. A repository is a directory like any other, with a
-mark and the name git gives it.
+tree shows from its top. A repository or a worktree is a directory like any
+other, with a mark of its own.
 
 Directories a session has worked in lead, the latest first, since that is
 where the next session most likely goes; the rest follow by path. The tree
@@ -50,15 +50,15 @@ not things a query looks for, and drop out while one is typed.
 ## The list
 
 ```
- ●   retry-bug              acme/gateway   ~/src/acme/gateway
- 2   api  acme/api
+ ●   retry-bug               ~/src/acme/gateway
+ 2   api
  ↑↑↑
  │││
  ││└─ reserved
  ││
  │└── a session: ○ no client, ● a client; a directory: how many sessions in it or below
  │
- └─── what git makes of the directory: bright a repository, dim a worktree of one
+ └─── what git makes of the directory:  a repository,  a worktree cut from one
 ```
 
 **The status column** is three cells wide whatever it has to say, so every
@@ -174,13 +174,13 @@ any other directory as what it holds, directories first.
 zmd daemon
 ```
 
-Optional, and the picker never waits on it. It holds the walk warm and a
-picker asks instead of walking: 290ms before a single row was drawn, against
-3ms, on every detach.
+Optional, and the picker never waits on it. It reads what is running every
+second and credits a visit to every directory a session moves to, which is
+what puts the directories worked in first; see
+[How directories are learned](#how-directories-are-learned).
 
-A picker that cannot reach it walks for itself, which is what keeps this an
-optimisation rather than a dependency and what lets the daemon be restarted
-under a running picker.
+It also walks the repositories below `~` and serves them over its socket,
+which no picker reads any more.
 
 The socket sits beside the rest of the state, or wherever `ZMD_DECK_DIR`
 says — an SSH `RemoteForward` being the case that needs to choose.

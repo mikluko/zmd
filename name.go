@@ -80,63 +80,6 @@ func shortID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// placeName is what a directory goes by in the list.
-//
-// A checkout goes by what git says it is, `owner/name` off its remote, since
-// the path is where it happens to sit and says nothing reliable: a directory
-// called `uptime-com` can hold `acme/workspace`, and one renamed on disk
-// keeps the name it was cloned under.
-//
-// A worktree goes by its repository and what is left of its own basename once
-// the repository's name is taken off the front, that prefix being how the
-// tools that cut worktrees name them.
-//
-// Anything git knows nothing about goes by its directory under its parent,
-// which is all there is to go on.
-//
-//	a checkout       acme/api
-//	its worktree     acme/api/rebase-517
-//	neither          Documents/notes
-func placeName(dir string, ident map[string]string) string {
-	path := filepath.Clean(dir)
-	if path == string(filepath.Separator) {
-		return path
-	}
-	if home, err := os.UserHomeDir(); err == nil && path == home {
-		return "~"
-	}
-
-	if name, ok := ident[path]; ok {
-		return name
-	}
-
-	container := filepath.Dir(path)
-	if root := repoRoot(path); root != "" && root != path {
-		container = root
-		if name, ok := ident[root]; ok {
-			return name + "/" + trimRepo(filepath.Base(path), name)
-		}
-	}
-	if container == string(filepath.Separator) {
-		return filepath.Base(path)
-	}
-	return filepath.Base(container) + "/" + filepath.Base(path)
-}
-
-// trimRepo takes the repository's own name off the front of a worktree's
-// basename, leaving what distinguishes it. A basename that does not carry the
-// prefix is left whole.
-func trimRepo(base, ident string) string {
-	repo := ident
-	if _, name, ok := strings.Cut(ident, "/"); ok {
-		repo = name
-	}
-	if rest, ok := strings.CutPrefix(base, repo+"-"); ok && rest != "" {
-		return rest
-	}
-	return base
-}
-
 // shorten writes a path as a reader says it.
 func shorten(path string) string {
 	if path == "" {

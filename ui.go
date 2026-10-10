@@ -32,18 +32,18 @@ const (
 	severalO = "◎"
 )
 
-// checkout marks a directory git tracks. The same mark carries both kinds,
-// bright where the directory is the repository and dim where it is a worktree
-// cut from one, since a worktree is that repository seen from another branch
-// rather than a different sort of thing.
+// repository and worktree mark the directories git tracks: a repository's own
+// checkout, and a worktree cut from one. A directory inside either is not
+// marked.
 //
-// The mark is a Nerd Font glyph, which Berkeley Mono does not carry and the
-// terminal's fallback does; so are none of the circles above, which the
-// terminal has been drawing from fallback all along.
+// The marks are Nerd Font glyphs, cod-repo and oct-git_branch, which Berkeley
+// Mono does not carry and the terminal's fallback does; so are none of the
+// circles above, which the terminal has been drawing from fallback all along.
 const (
-	checkout = ""
-	dim      = "\x1b[2m"
-	undim    = "\x1b[0m"
+	repository = "\uea62"
+	worktree   = "\uf418"
+	dim        = "\x1b[2m"
+	undim      = "\x1b[0m"
 )
 
 // row is one line of the list.
@@ -81,16 +81,20 @@ func circle(found []Session) string {
 	return detached
 }
 
-// mark renders what git makes of dir in the one cell it gets.
+// mark renders what git makes of dir in the one cell it gets: a repository
+// holds a .git directory, a worktree a .git file naming the repository it was
+// cut from. A submodule's .git file names none, and it is a repository's
+// checkout like any other.
 func mark(dir string) string {
-	root := repoRoot(dir)
+	marker := filepath.Join(dir, ".git")
+	info, err := os.Stat(marker)
 	switch {
-	case root == "":
+	case err != nil:
 		return " "
-	case root == filepath.Clean(dir):
-		return checkout
+	case !info.IsDir() && gitdirOwner(marker) != "":
+		return worktree
 	default:
-		return dim + checkout + undim
+		return repository
 	}
 }
 
