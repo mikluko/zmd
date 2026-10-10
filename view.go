@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -90,7 +89,7 @@ func fileRows(root, home string, live []Session, dirs []string, seen visits) []r
 			dir:    dir,
 			found:  found,
 			count:  len(found),
-			status: mark(dir) + tally(len(found)) + " ",
+			status: status(dir, found),
 			cells:  []string{rel},
 		})
 	}
@@ -152,7 +151,7 @@ func checkoutRows(home string, live []Session, repos []string, seen visits) []ro
 			dir:    dir,
 			found:  found,
 			count:  len(found),
-			status: mark(dir) + tally(len(found)) + " ",
+			status: status(dir, found),
 			cells:  []string{rel},
 		})
 	}
@@ -235,17 +234,4 @@ func sortedSessions(live []Session) []Session {
 func isDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
-}
-
-// tally writes how many sessions are alive below a row in the one cell it
-// gets: nothing for none, the count itself up to nine, and `+` past that.
-func tally(n int) string {
-	switch {
-	case n <= 0:
-		return " "
-	case n > 9:
-		return "+"
-	default:
-		return strconv.Itoa(n)
-	}
 }

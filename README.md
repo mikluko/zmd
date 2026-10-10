@@ -59,22 +59,23 @@ not things a query looks for, and drop out while one is typed.
 
 ```
  ●   retry-bug               ~/src/acme/gateway
- 2   api
+○  Forge/acme/api
  ↑↑↑
  │││
  ││└─ reserved
  ││
- │└── a session: ○ no client, ● a client; a checkout or directory: how many sessions it holds
+ │└── ● a client attached, ○ sessions but no client, blank no session
  │
- └─── what git makes of the directory:  a repository,  a worktree cut from one
+ └─── what git makes of the directory:  a repository's own checkout,  a worktree cut from one
 ```
 
 **The status column** is three cells wide whatever it has to say, so every
 name below it starts in the same place. The third cell is empty: it is held
 for what the agent in a session is doing, which nothing sets yet.
 
-On a directory the second cell is a count, `+` past nine. On a session it
-says whether a client is attached.
+On a checkout or directory the second cell stands for every session there:
+filled where any has a client, hollow where none has. How many there are is
+not what it answers.
 
 A session goes by its title where something has set one with
 `zmx set <name> title=…`, and by its name where nothing has.

@@ -21,27 +21,23 @@ import (
 // written past align rather than through it.
 const statusWidth = 3
 
-// A session with a client attached is filled, one with none is hollow, and a
-// place holding more than one says so with a ring inside the ring rather than
-// with a circle per session: the column is three cells wide whatever stands
-// there.
+// A session with a client attached is filled, and one with none is hollow.
 const (
 	attached = "●"
 	detached = "○"
-	several  = "◉"
-	severalO = "◎"
 )
 
 // repository and worktree mark the directories git tracks: a repository's own
 // checkout, and a worktree cut from one. A directory inside either is not
 // marked.
 //
-// The marks are Nerd Font glyphs, cod-repo and oct-git_branch, which Berkeley
-// Mono does not carry and the terminal's fallback does; so are none of the
-// circles above, which the terminal has been drawing from fallback all along.
+// The marks are Nerd Font glyphs, oct-git_branch and cod-git_commit, which
+// Berkeley Mono does not carry and the terminal's fallback does; so are none
+// of the circles above, which the terminal has been drawing from fallback all
+// along.
 const (
-	repository = "\uea62"
-	worktree   = "\uf418"
+	repository = "\uf418"
+	worktree   = "\ueafc"
 	dim        = "\x1b[2m"
 	undim      = "\x1b[0m"
 )
@@ -58,25 +54,17 @@ type row struct {
 	cells   []string  // what the line shows, aligned against every other row
 }
 
-// circle renders the sessions in one directory in the one cell they get.
-//
-// How many there are past one is not what the cell answers; whether any of
-// them is attached is. A count belongs to the rows themselves, which the
-// query reaches.
+// circle renders the sessions a row stands for in the one cell they get:
+// filled where any has a client attached, hollow where none has, blank where
+// there are none. How many there are is not what the cell answers.
 func circle(found []Session) string {
 	if len(found) == 0 {
 		return " "
 	}
 	for _, s := range found {
 		if s.Clients != "0" && s.Clients != "" {
-			if len(found) > 1 {
-				return several
-			}
 			return attached
 		}
-	}
-	if len(found) > 1 {
-		return severalO
 	}
 	return detached
 }

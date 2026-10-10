@@ -34,9 +34,9 @@ func scene(t *testing.T) (root string, found []Session) {
 	}
 }
 
-// One cell, whatever stands in the directory: filled where a client is
-// attached, ringed where there is more than one session.
-func TestCircleSaysAttachedAndPlural(t *testing.T) {
+// One cell, however many stand there: filled where any has a client attached,
+// hollow where none has, blank where there are none.
+func TestCircleSaysWhetherAnyIsAttached(t *testing.T) {
 	one, none, some := Session{Clients: "1"}, Session{Clients: "0"}, Session{Clients: ""}
 	for _, c := range []struct {
 		what  string
@@ -47,9 +47,8 @@ func TestCircleSaysAttachedAndPlural(t *testing.T) {
 		{"one, no client", []Session{none}, detached},
 		{"one, a client", []Session{one}, attached},
 		{"one, no count at all", []Session{some}, detached},
-		{"two, no client", []Session{none, none}, severalO},
-		{"two, one attached", []Session{none, one}, several},
-		{"three, one attached", []Session{none, one, none}, several},
+		{"two, no client", []Session{none, none}, detached},
+		{"three, one attached", []Session{none, one, none}, attached},
 	} {
 		if got := circle(c.found); got != c.want {
 			t.Errorf("%s: rendered %q, want %q", c.what, got, c.want)
@@ -310,18 +309,6 @@ func TestIdentityFallsPastOrigin(t *testing.T) {
 	}
 	if got := identity(filepath.Join(t.TempDir(), "nothing")); got != "" {
 		t.Errorf("a directory with no config gave %q", got)
-	}
-}
-
-// How much is alive, in the one cell it gets.
-func TestTallyCountsWhatIsBelow(t *testing.T) {
-	for _, c := range []struct {
-		n    int
-		want string
-	}{{0, " "}, {-1, " "}, {1, "1"}, {9, "9"}, {10, "+"}, {40, "+"}} {
-		if got := tally(c.n); got != c.want {
-			t.Errorf("tally(%d) = %q, want %q", c.n, got, c.want)
-		}
 	}
 }
 
