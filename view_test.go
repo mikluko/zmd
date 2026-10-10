@@ -3,21 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
-
-// placeAt returns the place standing for dir.
-func placeAt(t *testing.T, places []place, dir string) place {
-	t.Helper()
-	for _, p := range places {
-		if p.row.dir == filepath.Clean(dir) {
-			return p
-		}
-	}
-	t.Fatalf("no place for %q", dir)
-	return place{}
-}
 
 // sceneDirs are the checkouts and the plain directory scene builds.
 func sceneDirs(root string) (engine, tree, api, notes string) {
@@ -28,121 +17,99 @@ func sceneDirs(root string) (engine, tree, api, notes string) {
 	return
 }
 
-// A repository holds the sessions in its worktrees as much as its own, and a
-// worktree is never a place of its own.
-func TestRepoPlacesHoldTheirWorktreesSessions(t *testing.T) {
-	root, live := scene(t)
-	engine, tree, api, _ := sceneDirs(root)
-	places := repoPlaces(live, []string{engine, tree, api}, nil, visits{}, time.Now())
-	if len(places) != 2 {
-		t.Fatalf("%d places, want engine and api", len(places))
+// labelsOf is what each row says first.
+func labelsOf(rows []row) []string {
+	var out []string
+	for _, r := range rows {
+		out = append(out, r.cells[0])
 	}
-	kids := placeAt(t, places, engine).kids
-	var names []string
-	for _, k := range kids {
-		names = append(names, k.cells[0])
-	}
-	want := []string{"src.acme.engine", "src.acme.engine+review", "tree", newSession}
-	if len(names) != len(want) {
-		t.Fatalf("engine holds %q, want %q", names, want)
-	}
-	for i := range want {
-		if names[i] != want[i] {
-			t.Errorf("engine holds %q, want %q", names, want)
-			break
+	return out
+}
+
+// The tree goes treeDepth levels down past the walk's skips and leaves hidden
+// directories out, save one a session stands in or work has been done in.
+func TestTreeListsToDepthAndLeavesHiddenOut(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"a/b/c/d/e", ".hidden/x", "kept/.secret", "node_modules/pkg"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if kids[2].cells[1] == "" {
-		t.Error("the session in a worktree does not say which")
+	got := map[string]bool{}
+	for _, d := range tree(root, 4, []string{filepath.Join(root, "kept", ".secret")}) {
+		rel, _ := filepath.Rel(root, d)
+		got[rel] = true
 	}
-	if kids[0].cells[1] != "" {
-		t.Errorf("a session at the repository says where it is: %q", kids[0].cells[1])
-	}
-}
-
-// Entering a worktree no session stands in is how one is started there, so
-// such a worktree is offered among what its repository holds.
-func TestAWorktreeWithNoSessionIsOffered(t *testing.T) {
-	root, live := scene(t)
-	engine, tree, api, _ := sceneDirs(root)
-	var rest []Session
-	for _, s := range live {
-		if s.Name != "tree" {
-			rest = append(rest, s)
+	for _, want := range []string{"a", "a/b/c/d", "kept", "kept/.secret"} {
+		if !got[want] {
+			t.Errorf("%s is not listed: %v", want, got)
 		}
 	}
-	kids := placeAt(t, repoPlaces(rest, []string{engine, tree, api}, nil, visits{}, time.Now()), engine).kids
-	offered := kids[len(kids)-2]
-	if offered.dir != tree || offered.session != "" {
-		t.Errorf("before the offer: %+v, want the idle worktree", offered)
+	for _, not := range []string{"a/b/c/d/e", ".hidden", "node_modules"} {
+		if got[not] {
+			t.Errorf("%s is listed", not)
+		}
 	}
 }
 
-// The directories view holds what no repository does, and only that.
-func TestDirPlacesHoldWhatNoRepositoryDoes(t *testing.T) {
+// Standing somewhere lists the sessions there, the offer, then what is below:
+// worked-in directories first, latest first, the rest by path. A directory
+// counts every session in it or below it.
+func TestFileRowsStandingSomewhere(t *testing.T) {
 	root, live := scene(t)
-	engine, tree, api, notes := sceneDirs(root)
-	places := dirPlaces(live, []string{engine, tree, api}, "", visits{}, time.Now())
-	if len(places) != 2 {
-		t.Fatalf("%d places, want notes and the loose directory", len(places))
-	}
-	kids := placeAt(t, places, notes).kids
-	if len(kids) != 2 || kids[0].session != "Documents.notes" || kids[1].cells[0] != newSession {
-		t.Errorf("notes holds %+v", kids)
-	}
-}
-
-// A directory worked in before, or the one the pane stands in, is offered
-// whether or not a session stands there now; one gone from disk, or inside a
-// repository, is not.
-func TestDirPlacesOfferVisitedAndStartingDirs(t *testing.T) {
-	root, _ := scene(t)
-	engine, _, _, notes := sceneDirs(root)
-	start := filepath.Join(root, "Downloads")
-	if err := os.MkdirAll(start, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	_, _, api, notes := sceneDirs(root)
 	now := time.Now()
 	seen := visits{
-		notes:                       {Rank: 1, Last: now.Unix()},
-		filepath.Join(root, "gone"): {Rank: 5, Last: now.Unix()},
-		engine:                      {Rank: 5, Last: now.Unix()},
+		notes: {Rank: 1, Last: now.Add(-time.Hour).Unix()},
+		api:   {Rank: 1, Last: now.Unix()},
 	}
-	places := dirPlaces(nil, []string{engine}, start, seen, now)
-	got := map[string]bool{}
-	for _, p := range places {
-		got[p.row.dir] = true
+	src := filepath.Join(root, "src")
+	rows := fileRows(src, root, live, tree(src, treeDepth, nil), nil, seen)
+	got := labelsOf(rows)
+	if got[0] != ".." || got[1] != newSession || got[2] != "acme/api" {
+		t.Fatalf("rows %q, want .., the offer, then acme/api as the latest worked in", got)
 	}
-	if !got[notes] || !got[start] || len(got) != 2 {
-		t.Errorf("places %v, want notes and the starting directory", got)
-	}
-}
-
-// What is running leads, and below it what was worked in most and latest.
-func TestPlacesHoldingSessionsLead(t *testing.T) {
-	now := time.Now()
-	seen := visits{"/b": {Rank: 50, Last: now.Unix()}, "/c": {Rank: 2, Last: now.Unix()}}
-	got := ordered([]place{
-		{row: row{dir: "/a", cells: []string{"a"}}},
-		{row: row{dir: "/b", cells: []string{"b"}}},
-		{row: row{dir: "/c", cells: []string{"c"}}},
-		{row: row{dir: "/d", count: 1, cells: []string{"d"}}},
-	}, seen, now)
-	var order string
-	for _, p := range got {
-		order += p.row.cells[0]
-	}
-	if order != "dbca" {
-		t.Errorf("order %q, want dbca", order)
+	for _, r := range rows {
+		if r.cells[0] == "acme" && r.count != 4 {
+			t.Errorf("acme counts %d sessions, want the four at or below it", r.count)
+		}
 	}
 }
 
-// A repository the walk never reached is a directory like any other, or a
-// picker started in one would stand somewhere it cannot show.
-func TestAnUnwalkedRepositoryIsADirectory(t *testing.T) {
-	root, _ := scene(t)
-	engine, _, _, _ := sceneDirs(root)
-	outside := repoAt(t, filepath.Join(t.TempDir(), "elsewhere"))
-	places := dirPlaces(nil, []string{engine}, filepath.Join(outside, "sub"), visits{}, time.Now())
-	placeAt(t, places, outside)
+// At the top there is no way up, and the sessions standing there lead.
+func TestFileRowsAtHome(t *testing.T) {
+	root, live := scene(t)
+	live = append(live, Session{Name: "athome", Dir: root, Clients: "0"})
+	got := labelsOf(fileRows(root, root, live, nil, nil, visits{}))
+	if len(got) < 2 || got[0] != "athome" || got[1] != newSession {
+		t.Errorf("rows %q, want the session at home, then the offer", got)
+	}
+}
+
+// The latest attached leads; a session zmd never attached ranks by when zmx
+// started it.
+func TestSessionRowsLatestAttachedFirst(t *testing.T) {
+	live := []Session{
+		{Name: "old", Created: 100},
+		{Name: "young", Created: 300},
+		{Name: "attached", Created: 50},
+	}
+	got := labelsOf(sessionRows(live, map[string]int64{"attached": 500}, nil))
+	if strings.Join(got, " ") != "attached young old" {
+		t.Errorf("order %q", got)
+	}
+}
+
+// An application bundle is a directory macOS presents as a file, and holds no
+// work to stand in.
+func TestTreeLeavesBundlesOut(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Applications", "Tool.app", "Contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range tree(root, 4, nil) {
+		if strings.Contains(d, ".app") {
+			t.Errorf("%s is listed", d)
+		}
+	}
 }

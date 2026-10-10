@@ -82,10 +82,12 @@ func (m *pickModel) listRows() int {
 	return max(m.listHeight()-3, 1)
 }
 
-// sizeQuery gives the query the list's width less its prompt, so a long query
-// scrolls within its line rather than running off the end of it. The input
+// sizeQuery writes the prompt and gives the query the list's width less it,
+// so a long query scrolls within its line rather than running off the end of
+// it. The input
 // works out that scrolling as keys arrive, so the width is set ahead of them.
 func (m *pickModel) sizeQuery() {
+	m.query.Prompt = m.where(m.listWidth()/3) + "> "
 	m.query.SetWidth(max(m.listWidth()-ansi.StringWidth(m.query.Prompt)-1, 1))
 }
 
@@ -173,10 +175,10 @@ func (m *pickModel) header() string {
 		return errStyle.Render(m.status)
 	}
 	keys := m.hints()
-	if m.mode == modeRepos {
-		keys = append(keys, "⇥ dirs")
+	if m.mode == modeFiles {
+		keys = append(keys, "⇥ sessions")
 	} else {
-		keys = append(keys, "⇥ repos")
+		keys = append(keys, "⇥ files")
 	}
 	if m.held != nil {
 		keys = append(keys, "⎋ leave")
@@ -184,28 +186,26 @@ func (m *pickModel) header() string {
 	return headerStyle.Render(strings.Join(keys, "  "))
 }
 
-// hints is the keys worth offering for the line under the cursor.
+// hints is the keys worth offering for the row under the cursor.
 //
 // A key that would do nothing is not offered: nothing to take where nobody
 // else holds the session, nothing to kill where nothing is running, and
 // `⏎ start` rather than `⏎ attach` where entering means making one.
 func (m *pickModel) hints() []string {
-	ln, pl, r := m.current()
+	r := m.current()
 	switch {
-	case ln == nil:
+	case r == nil:
 		return nil
-	case ln.kid < 0:
-		keys := []string{"⏎ open"}
-		if m.top().query == "" && m.top().expanded(m.top().cursor) {
-			keys[0] = "⏎ close"
-		}
-		keys = append(keys, "⌥⏎ new", "⇧⏎ mark")
-		if pl.row.count > 0 {
+	case r.kind == kindUp:
+		return []string{"⏎ up"}
+	case r.kind == kindOffer:
+		return []string{"⏎ start"}
+	case r.kind == kindDir:
+		keys := []string{"⏎ in", "⌥⏎ new", "⇧⏎ mark"}
+		if r.count > 0 {
 			keys = append(keys, "⌦ kill")
 		}
 		return keys
-	case r.session == "":
-		return []string{"⏎ start"}
 	case r.held:
 		return []string{"⏎ take", "⌥⏎ new", "⇧⏎ mark", "⌦ kill"}
 	default:
@@ -213,17 +213,23 @@ func (m *pickModel) hints() []string {
 	}
 }
 
-// info is the count of places the query left of those in the view, the
-// marked lines after it, and a rule to the edge.
+// info is the count of sessions and directories the query left of those in
+// the view, the marked rows after it, and a rule to the edge.
 func (m *pickModel) info(width int) string {
 	p := m.top()
-	shown := 0
+	counts := func(r row) bool { return r.kind == kindSession || r.kind == kindDir }
+	shown, total := 0, 0
 	for _, ln := range p.lines {
-		if ln.kid < 0 {
+		if counts(p.rows[ln.row]) {
 			shown++
 		}
 	}
-	count := strconv.Itoa(shown) + "/" + strconv.Itoa(len(p.places))
+	for _, r := range p.rows {
+		if counts(r) {
+			total++
+		}
+	}
+	count := strconv.Itoa(shown) + "/" + strconv.Itoa(total)
 	if n := len(p.marked); n > 0 {
 		count += " (" + strconv.Itoa(n) + ")"
 	}
@@ -249,8 +255,8 @@ func (m *pickModel) listView(width, height int) []string {
 }
 
 // rowsView is the lines of the view that fit in height rows, kept around the
-// cursor. A place is marked open or closed, and what it holds is indented
-// under it.
+// cursor. A directory's path is cut from the left, keeping the end that tells
+// it from its siblings.
 func (m *pickModel) rowsView(width, height int) []string {
 	var lines []string
 	p := m.top()
@@ -260,38 +266,28 @@ func (m *pickModel) rowsView(width, height int) []string {
 	if p.cursor >= p.offset+height {
 		p.offset = p.cursor - height + 1
 	}
-	if len(p.places) == 0 {
+	if len(p.rows) == 0 {
 		lines = append(lines, "  "+headerStyle.Render(empty(p.mode)))
 	}
 	for i := p.offset; i < len(p.lines) && len(lines) < height; i++ {
 		ln := p.lines[i]
-		pl := p.places[ln.place]
+		r := p.rows[ln.row]
 		on := i == p.cursor
 		marker := " "
-		if p.marked[lineKey(p, ln)] {
+		if p.marked[rowKey(r)] {
 			marker = markerStyle.Render("┃")
-		}
-		var r row
-		var text, lead string
-		if ln.kid < 0 {
-			r, text = pl.row, p.text[ln.place]
-			lead = "▸ "
-			if p.expanded(i) {
-				lead = "▾ "
-			}
-		} else {
-			r, text = pl.kids[ln.kid], p.kidText[ln.place][ln.kid]
-			lead = "    "
 		}
 		status := r.status
 		if status == "" {
 			status = strings.Repeat(" ", statusWidth)
 		}
-		shown := highlight(text, ln.pos, on)
-		if ln.kid < 0 && p.mode == modeDirs {
-			shown = keepTail(shown, width-1-1-ansi.StringWidth(lead)-statusWidth)
+		var shown string
+		if r.kind == kindDir {
+			shown = dirText(p.text[ln.row], len([]rune(r.cells[0])), ln.pos, on, width-1-1-statusWidth)
+		} else {
+			shown = highlight(p.text[ln.row], ln.pos, on)
 		}
-		body := ansi.Truncate(marker+ruleStyle.Render(lead)+status+shown, width-1, "…")
+		body := ansi.Truncate(marker+status+shown, width-1, "…")
 		if on {
 			lines = append(lines, pointerStyle.Render("▌")+underCursor(body, width-1))
 		} else {
@@ -302,6 +298,24 @@ func (m *pickModel) rowsView(width, height int) []string {
 		lines = append(lines, "")
 	}
 	return lines[:height]
+}
+
+// dirText is a directory row in width cells: its path, cut from the left
+// where it has to be, then the name after it, which is never cut. n is the
+// path's length in runes, and pos where the query landed in the whole.
+func dirText(text string, n int, pos []int, on bool, width int) string {
+	runes := []rune(text)
+	var head, tail []int
+	for _, p := range pos {
+		if p < n {
+			head = append(head, p)
+		} else {
+			tail = append(tail, p-n)
+		}
+	}
+	name := highlight(string(runes[n:]), tail, on)
+	path := keepTail(highlight(string(runes[:n]), head, on), width-ansi.StringWidth(name))
+	return path + name
 }
 
 // keepTail cuts s to width cells from the left, so a path keeps the end that

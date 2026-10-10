@@ -48,11 +48,11 @@ const (
 
 // row is one line of the list.
 type row struct {
-	dir     string    // the place the row stands for
+	kind    rowKind
+	dir     string    // the directory the row stands for
 	found   []Session // what is running there, by name
 	session string    // the one session to attach to, empty where there is not exactly one
 	count   int       // sessions alive at or below the row
-	trees   int       // worktrees cut from the checkout, where the row is one
 	held    bool      // another terminal has that session open
 	status  string    // the fixed cells ahead of the name, which may carry colour
 	cells   []string  // what the line shows, aligned against every other row
@@ -104,10 +104,10 @@ func status(dir string, found []Session) string {
 
 // empty is the line a view with nothing to show puts in place of a list.
 func empty(mo mode) string {
-	if mo == modeDirs {
-		return "no directories yet: sessions outside a repository put theirs here"
+	if mo == modeSessions {
+		return "nothing running"
 	}
-	return "no repositories below ~"
+	return "nothing here"
 }
 
 // takes is what the selector asks before a session changes hands.

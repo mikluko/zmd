@@ -30,11 +30,50 @@ func visitsFile() string {
 	return filepath.Join(dir, "visits.json")
 }
 
-// loadVisits reads the visits, or none where there is no record or it does
-// not read: what it ranks is an order, and losing it loses nothing else.
+// loadVisits reads the visits.
 func loadVisits() visits {
-	out := visits{}
-	path := visitsFile()
+	return load[visits](visitsFile())
+}
+
+// recordVisits credits a visit to each of dirs.
+func recordVisits(dirs []string, now time.Time) {
+	if len(dirs) == 0 {
+		return
+	}
+	update(visitsFile(), func(v visits) {
+		for _, dir := range dirs {
+			v.add(dir, now)
+		}
+	})
+}
+
+// attachesFile is where the time zmd last attached each session is kept.
+func attachesFile() string {
+	dir := stateDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "attaches.json")
+}
+
+// loadAttaches is when zmd last attached each session, by name, in Unix
+// seconds; none where there is no record.
+func loadAttaches() map[string]int64 {
+	return load[map[string]int64](attachesFile())
+}
+
+// recordAttach notes that zmd attached name now.
+func recordAttach(name string, now time.Time) {
+	update(attachesFile(), func(a map[string]int64) {
+		a[name] = now.Unix()
+	})
+}
+
+// load reads the record at path, or an empty one where there is none or it
+// does not read: what these records hold is an order, and losing it loses
+// nothing else.
+func load[M ~map[K]V, K comparable, V any](path string) M {
+	out := M{}
 	if path == "" {
 		return out
 	}
@@ -46,11 +85,10 @@ func loadVisits() visits {
 	return out
 }
 
-// recordVisits credits a visit to each of dirs, under a lock on the record,
-// since the daemon and every picker write it.
-func recordVisits(dirs []string, now time.Time) {
-	path := visitsFile()
-	if path == "" || len(dirs) == 0 {
+// update applies change to the record at path under a lock on it, since the
+// daemon and every picker write these records.
+func update[M ~map[K]V, K comparable, V any](path string, change func(M)) {
+	if path == "" {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -66,11 +104,9 @@ func recordVisits(dirs []string, now time.Time) {
 	}
 	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 
-	v := loadVisits()
-	for _, dir := range dirs {
-		v.add(dir, now)
-	}
-	content, err := json.Marshal(v)
+	m := load[M](path)
+	change(m)
+	content, err := json.Marshal(m)
 	if err != nil {
 		return
 	}
@@ -126,13 +162,4 @@ func (v visits) score(dir string, now time.Time) float64 {
 	default:
 		return e.Rank / 4
 	}
-}
-
-// placeOf is the place a working directory counts as a visit to: the
-// repository it stands in, or the directory itself outside any.
-func placeOf(dir string) string {
-	if root := repoRoot(dir); root != "" {
-		return root
-	}
-	return filepath.Clean(dir)
 }

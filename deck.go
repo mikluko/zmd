@@ -255,7 +255,7 @@ func creditMoves(where map[string]string, live []Session) map[string]string {
 		}
 		now[s.Name] = s.Dir
 		if where[s.Name] != s.Dir {
-			moved = append(moved, placeOf(s.Dir))
+			moved = append(moved, filepath.Clean(s.Dir))
 		}
 	}
 	recordVisits(moved, time.Now())

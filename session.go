@@ -19,6 +19,7 @@ type Session struct {
 	Clients string
 	Dir     string
 	Title   string // what a `zmx set <name> title=` says the session is for
+	Created int64  // when zmx started it, in Unix seconds
 	Here    bool   // this terminal is one of the clients
 }
 
@@ -103,6 +104,8 @@ func parseSessions(r io.Reader) []Session {
 				s.Clients = value
 			case "cwd":
 				s.Dir = parseCwd(value)
+			case "created":
+				s.Created, _ = strconv.ParseInt(value, 10, 64)
 			case "title":
 				// A label, written on the same record as the fields zmx
 				// keeps itself, so it costs no second call to read.

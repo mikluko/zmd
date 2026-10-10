@@ -1,7 +1,7 @@
 # zmd
 
-Session navigation for [zmx](https://zmx.sh): a list of places, each holding
-the sessions running there and the offer of another.
+Session navigation for [zmx](https://zmx.sh): stand in a directory, see the
+sessions there and the directories below, and attach or start one.
 
 zmx persists terminal sessions and, by design, provides no windows, tabs or
 splits. What it also has no opinion about is *which* session you want. This
@@ -11,111 +11,73 @@ fills that gap and nothing else.
 zmd
 ```
 
-## Two views of places
+## Two views
 
-The picker lists places, in one of two views. `tab` switches between them, and
-the picker reopens in whichever you switched to last.
+`tab` switches between them, and the picker reopens in whichever you switched
+to last.
 
-```
-repos    every repository below ~ that is not a worktree
-dirs     everything else: where sessions stand, where sessions have been,
-         and where the picker was started
-```
-
-The two never overlap. A session counts against the repository it stands in,
-worktrees included, and only a session outside every repository the walk found
-gets a directory of its own. A repository the walk never reached, outside `~`,
-is one of those directories.
-
-**A place opens in place.** `enter` on it lists what it holds, indented under
-it, and `enter` again closes it:
+**The filesystem.** The picker stands in one directory, opening at `~`, and
+lists the sessions standing there, the offer of another, and the directories
+below it, four levels down:
 
 ```
-▾ 2 acme/api                   ~/src/acme
-     ● retry-bug
-     ○ flaky-ci        acme/api/rebase-517
-       acme/api/docs-pass
-       <new session>
-▸   acme/web                   ~/src/acme
+~/Forge/acme>
+     ..                                  enter: stand in the directory above
+   ● retry-bug
+     <new session>                       enter: start a session here
+ 2 api  acme/api                         enter: stand in it
+   api/internal
+   web  acme/web
 ```
 
-A repository holds every session in it or in its worktrees, then each worktree
-no session stands in, then the offer of another session at the repository
-itself. Entering a worktree with no session starts one there. A directory holds
-the sessions standing exactly in it, then the offer.
+`enter` on a directory stands in it, and `..` stands in the one above. A
+directory counts every session standing in it or below it, so work deep in a
+tree shows from its top. A repository is a directory like any other, with a
+mark and the name git gives it.
 
-**Places with sessions lead**, then the rest by how much and how lately they
-have been worked in: a visit a day ago outranks the same number a month ago, as
-in [zoxide](https://github.com/ajeetdsouza/zoxide).
+Directories a session has worked in lead, the latest first, since that is
+where the next session most likely goes; the rest follow by path. The tree
+leaves out hidden directories, caches, build output, `Library` and
+application bundles, save a directory a session stands in or has worked in.
 
-**Typing narrows the view.** A query matches places and session titles. A
-session that matches brings its place along, open on the matches alone, so a
-match never stands without the place it is in. A place that matches only itself
-is listed closed, and entering it clears the query and leaves it open under the
-cursor.
+**The sessions.** Every session, wherever it stands, the one zmd attached
+latest first; a session zmd never attached ranks by when zmx started it.
+
+**Typing narrows the view**, matching a directory's path and name or a
+session's title, name and place. The way up and the offer of a session are
+not things a query looks for, and drop out while one is typed.
 
 ## The list
 
 ```
-▾ 2 acme/gateway             ~/src/acme
-     ●  retry-bug
-     ○  zmd.ghostty.6f2a91c4  acme/gateway/rebase-517
-  ↑ ↑↑↑
-  │ │││
-  │ ││└─ reserved
-  │ ││
-  │ │└── a place: how many sessions it holds; a session: ○ no client, ● a client
-  │ │
-  │ └─── what git makes of the directory: bright a repository, dim a worktree of one
-  │
-  └───── a place: ▸ closed, ▾ open
+ ●   retry-bug              acme/gateway   ~/src/acme/gateway
+ 2   api  acme/api
+ ↑↑↑
+ │││
+ ││└─ reserved
+ ││
+ │└── a session: ○ no client, ● a client; a directory: how many sessions in it or below
+ │
+ └─── what git makes of the directory: bright a repository, dim a worktree of one
 ```
 
 **The status column** is three cells wide whatever it has to say, so every
 name below it starts in the same place. The third cell is empty: it is held
 for what the agent in a session is doing, which nothing sets yet.
 
-On a place the second cell is a count: how many sessions it holds, `+` past
-nine. On a session it says whether a client is attached.
+On a directory the second cell is a count, `+` past nine. On a session it
+says whether a client is attached.
 
 A session goes by its title where something has set one with
-`zmx set <name> title=…`, and by its name where nothing has. Where it stands
-somewhere other than its place, in a worktree or a directory below, the row
-says where.
-
-**A place's name** is what git says it is: `owner/name`, read off the
-checkout's remote. The path is where a checkout happens to sit and says
-nothing reliable about what it holds — a directory called `uptime-com` can
-hold `acme/workspace`, and one renamed on disk keeps the name it was cloned
-under. A worktree goes by its repository and what is left of its own basename
-once the repository's name is taken off the front, that prefix being how the
-tools that cut worktrees name them.
-
-A directory git knows nothing about, or a checkout with no remote, goes by its
-directory under its parent, which is all there is to go on.
-
-```
-a checkout       acme/api
-its worktree     acme/api/rebase-517
-neither          Documents/notes
-```
-
-The remotes are read out of each `.git/config` rather than by opening the
-repository: go-git refuses one whose `core.repositoryformatversion` carries an
-extension it does not implement, and `worktreeconfig` is one git sets on
-exactly the repositories worktrees have been cut from.
-
-The marks are Nerd Font and Geometric Shapes glyphs. Berkeley Mono carries
-none of them, including the circles, which the terminal has been drawing from
-its fallback font all along.
+`zmx set <name> title=…`, and by its name where nothing has.
 
 ## What the keys do
 
 | | |
 | --- | --- |
-| `enter` | On a place, open or close it. On a session, attach it. On `<new session>` or a worktree with no session, start one there. A session another terminal has open is taken, after asking. |
-| `tab` | Switch between the repos and dirs views. |
-| `shift-enter` | Mark, for a kill that takes several at once. A marked place stands for every session it holds. |
+| `enter` | On a directory, stand in it; on `..`, stand in the one above. On a session, attach it, taking it after asking where another terminal has it open. On `<new session>`, start one where the picker stands. |
+| `tab` | Switch between the filesystem and the sessions. |
+| `shift-enter` | Mark, for a kill that takes several at once. A marked directory stands for every session in it or below it. |
 | `alt-enter` | Start another session where the cursor stands, whatever is already running there. |
 | `delete` | Kill the sessions the marked rows stand for, or the row under the cursor, after asking. `y` kills; any other key does not. |
 | `alt-delete` | Kill them without asking. |
@@ -123,8 +85,8 @@ its fallback font all along.
 | `alt-up`, `alt-down` | Scroll the preview. `alt-pgup` and `alt-pgdown` scroll it by the page. |
 | `esc` | Leave for the session this pane last attached to. Leave outright where there is none, or where another terminal has it. |
 
-The arrows move the cursor and edit the query, and nothing else: with places
-opening in place there is no level to walk up or down.
+The arrows move the cursor and edit the query, and nothing else: going up is
+`enter` on `..`, which leaves them free to correct what was typed.
 
 The hint line offers only the keys that would do something where the cursor
 stands: no `⌦ kill` where nothing is running, and `⏎ start` rather than
@@ -176,36 +138,27 @@ none.
 
 ## Where it opens
 
-In the view switched to last, with the cursor on the session this pane last
-held and its place open around it — which, after a detach, is the session just
-left, so its peers are around it. Where that session lives in the other view,
-the cursor starts at the top.
+The filesystem view opens at `~`, always. The sessions view opens with the
+cursor on the session this pane last held, which after a detach is the one
+just left.
 
-A pane that has held nothing has only where it stands to go on, so its place
-opens with the cursor on the offer of a session there.
-
-The directory the picker was *run* in is no use for the first: a pane runs it
-in a loop, and that loop's shell never chdirs, so it stands where the pane was
-opened however much work has happened since. That record is kept per pane,
-keyed by the pid of the shell whose loop runs the picker, which is the same
-process for as long as the pane is open. Panes sharing one record is panes
-going back to a session they were never in.
+That record is kept per pane, keyed by the pid of the shell whose loop runs
+the picker, which is the same process for as long as the pane is open. Panes
+sharing one record is panes going back to a session they were never in.
 
 ## How directories are learned
 
-There are some 25,000 directories below `~` within five levels, not counting
-hidden ones, and nearly all of them are caches, build output and `Library`, so the dirs view is learned rather
-than walked. A directory is learned by working in it: zmx follows a session's
-`cd` and reports where it went, and `zmd daemon` credits a visit to every
-place a session moves to. Open a session anywhere, `cd` to where the work is,
-and the next picker offers it.
+Which directories lead is learned from where sessions work: zmx follows a
+session's `cd` and reports where it went, and `zmd daemon` credits a visit to
+every directory a session moves to. Open a session anywhere, `cd` to where the
+work is, and the next picker lists that directory first, even a hidden one the
+tree would leave out.
 
-Without the daemon the picker learns only when it runs: the place it attaches
-or starts in, and any place a running session stands in that it has not seen
-before.
+Without the daemon the picker learns only when it runs: the directory it
+attaches or starts in, and any directory a running session stands in that it
+has not seen before.
 
-The record is `visits.json` in the state directory. A directory gone from disk
-is not offered.
+The records are `visits.json` and `attaches.json` in the state directory.
 
 ## The preview
 

@@ -124,3 +124,68 @@ func repositories(root string) []string {
 	sort.Strings(found)
 	return found
 }
+
+// bundles are the extensions of directories macOS presents as single files:
+// applications, libraries and packages, which hold no work to stand in.
+var bundles = map[string]bool{
+	".app":           true,
+	".appex":         true,
+	".bundle":        true,
+	".framework":     true,
+	".kext":          true,
+	".localized":     true,
+	".lproj":         true,
+	".photoslibrary": true,
+	".plugin":        true,
+	".xcassets":      true,
+}
+
+// treeDepth is how many levels below the directory the picker stands in it
+// lists.
+const treeDepth = 4
+
+// tree is every directory below root, to depth levels, past the walk's skips
+// and leaving out hidden ones: they are most of a home directory and almost
+// none of the work in it. A directory in keep is listed wherever it is within
+// depth, hidden or not, since keep is where sessions stand and work has been.
+func tree(root string, depth int, keep []string) []string {
+	root = filepath.Clean(root)
+	levels := func(path string) int {
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			return 0
+		}
+		return strings.Count(rel, string(filepath.Separator)) + 1
+	}
+
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	fastwalk.Walk(&fastwalk.Config{}, root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || path == root {
+			return nil
+		}
+		name := d.Name()
+		if skipped[name] || bundles[filepath.Ext(name)] || strings.HasPrefix(name, ".") || levels(path) > depth {
+			return fs.SkipDir
+		}
+		mu.Lock()
+		seen[filepath.Clean(path)] = true
+		mu.Unlock()
+		if levels(path) == depth {
+			return fs.SkipDir
+		}
+		return nil
+	})
+	for _, dir := range keep {
+		dir = filepath.Clean(dir)
+		if n := levels(dir); n > 0 && n <= depth && isDir(dir) {
+			seen[dir] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for dir := range seen {
+		out = append(out, dir)
+	}
+	sort.Strings(out)
+	return out
+}

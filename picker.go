@@ -19,27 +19,25 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// line is one line of the list as drawn: a place's own row, or one of the
-// rows it expands into, and where the query landed in it.
+// line is one row of the list as drawn, and where the query landed in it.
 type line struct {
-	place int // index into the pane's places
-	kid   int // index into that place's kids, or -1 for the place itself
-	pos   []int
+	row int // index into the pane's rows
+	pos []int
 }
 
 // pane is one view with everything the picker holds of it, so switching away
 // and back lands where it was left.
 type pane struct {
-	mode    mode
-	places  []place
-	text    []string   // each place's aligned cells, plain, which the query is matched against
-	kidText [][]string // the same for each place's kids
-	lines   []line
-	open    map[string]bool // expanded places, by directory
-	marked  map[string]bool // by lineKey, so a mark survives a refilter
-	cursor  int
-	offset  int
-	query   string
+	mode   mode
+	root   string   // the directory the filesystem view stands in
+	dirs   []string // the directories below root, walked on standing there
+	rows   []row
+	text   []string // each row's aligned cells, plain, which the query is matched against
+	lines  []line
+	marked map[string]bool // by rowKey, so a mark survives a refilter
+	cursor int
+	offset int
+	query  string
 }
 
 // previewMsg carries a preview, tagged with the cursor move it was fetched for
@@ -103,14 +101,13 @@ type outcome struct {
 }
 
 type pickModel struct {
-	live  []Session
-	held  *Session // what escape leaves for, nil where there is nothing to go back to
-	repos []string
-	ident map[string]string
-	home  string // where repositories are walked from, "" for never again
-	start string
-	seen  visits
-	now   time.Time
+	live     []Session
+	held     *Session // what escape leaves for, nil where there is nothing to go back to
+	repos    []string
+	ident    map[string]string
+	home     string // where the picker stands on opening, and repositories are walked from
+	seen     visits
+	attached map[string]int64
 
 	panes [2]*pane
 	mode  mode
@@ -129,7 +126,7 @@ type pickModel struct {
 	result outcome
 }
 
-func newPickModel(live []Session, repos []string, ident map[string]string, start string, seen visits, open mode) *pickModel {
+func newPickModel(live []Session, repos []string, ident map[string]string, home string, seen visits, attached map[string]int64, open mode) *pickModel {
 	q := textinput.New()
 	styles := textinput.DefaultDarkStyles()
 	styles.Focused.Prompt = promptStyle
@@ -138,13 +135,13 @@ func newPickModel(live []Session, repos []string, ident map[string]string, start
 	q.Focus()
 	m := &pickModel{
 		live: live, held: lastHeld(live), repos: repos, ident: ident,
-		start: start, seen: seen, now: time.Now(),
+		home: home, seen: seen, attached: attached,
 		query: q, match: newMatcher(), preview: viewport.New(),
 	}
-	for _, mo := range []mode{modeRepos, modeDirs} {
-		m.panes[mo] = &pane{mode: mo, open: map[string]bool{}, marked: map[string]bool{}}
-		m.build(m.panes[mo])
-	}
+	m.panes[modeFiles] = &pane{mode: modeFiles, marked: map[string]bool{}}
+	m.panes[modeSessions] = &pane{mode: modeSessions, marked: map[string]bool{}}
+	m.stand(m.panes[modeFiles], home)
+	m.build(m.panes[modeSessions])
 	m.show(open)
 	return m
 }
@@ -157,170 +154,159 @@ func (m *pickModel) show(mo mode) {
 	m.mode = mo
 	m.query.SetValue(m.top().query)
 	m.query.CursorEnd()
-	m.query.Prompt = mo.String() + "> "
 	m.sizeQuery()
 }
 
-// lineKey is what identifies a line across rebuilds: the place it is, the
-// session it stands for, or the directory it offers to start in.
-func lineKey(p *pane, ln line) string {
-	pl := p.places[ln.place]
-	if ln.kid < 0 {
-		return "p:" + pl.row.dir
+// where is what the prompt says, in at most width cells: a directory deep
+// enough to fill the line keeps its end, which is the part that differs.
+func (m *pickModel) where(width int) string {
+	if m.mode == modeSessions {
+		return "sessions"
 	}
-	r := pl.kids[ln.kid]
-	if r.session != "" {
-		return "s:" + r.session
-	}
-	return "o:" + r.dir + ":" + r.cells[0]
+	return keepTail(shorten(m.panes[modeFiles].root), max(width, 8))
 }
 
-// build reads p's places afresh from what is running, keeping the cursor on
-// the line it stood on, or at the same height where that line is gone.
+// rowKey is what identifies a row across rebuilds: the session it stands for,
+// or what it is and the directory it is about.
+func rowKey(r row) string {
+	switch r.kind {
+	case kindSession:
+		return "s:" + r.session
+	case kindOffer:
+		return "o:" + r.dir
+	case kindUp:
+		return "u:" + r.dir
+	default:
+		return "d:" + r.dir
+	}
+}
+
+// stand makes dir the directory the filesystem view stands in, walking what is
+// below it, with the cursor on the directory just left where it is listed.
+func (m *pickModel) stand(p *pane, dir string) {
+	from := p.root
+	p.root = filepath.Clean(dir)
+	p.dirs = tree(p.root, treeDepth, keepDirs(m.live, m.seen))
+	p.query, p.cursor, p.offset = "", 0, 0
+	if m.top() == p {
+		m.query.SetValue("")
+	}
+	m.build(p)
+	if from != "" {
+		m.seek(p, "d:"+from)
+	}
+	m.sizeQuery()
+}
+
+// build reads p's rows afresh from what is running, keeping the cursor on the
+// row it stood on, or at the same height where that row is gone.
 func (m *pickModel) build(p *pane) {
 	keep := ""
-	if p.cursor < len(p.lines) {
-		keep = lineKey(p, p.lines[p.cursor])
+	if r := p.at(p.cursor); r != nil {
+		keep = rowKey(*r)
 	}
-	if p.mode == modeDirs {
-		p.places = dirPlaces(m.live, m.repos, m.start, m.seen, m.now)
+	if p.mode == modeFiles {
+		p.rows = fileRows(p.root, m.home, m.live, p.dirs, m.ident, m.seen)
 	} else {
-		p.places = repoPlaces(m.live, m.repos, m.ident, m.seen, m.now)
+		p.rows = sessionRows(m.live, m.attached, m.ident)
 	}
-
-	cells := make([][]string, len(p.places))
-	var kidCells [][]string
-	for i, pl := range p.places {
-		cells[i] = pl.row.cells
-		for _, k := range pl.kids {
-			kidCells = append(kidCells, k.cells)
-		}
-	}
-	p.text = align(cells)
-	flat := align(kidCells)
-	p.kidText = make([][]string, len(p.places))
-	n := 0
-	for i, pl := range p.places {
-		p.kidText[i] = flat[n : n+len(pl.kids)]
-		n += len(pl.kids)
-	}
-
 	present := map[string]bool{}
-	for i, pl := range p.places {
-		present[lineKey(p, line{place: i, kid: -1})] = true
-		for k := range pl.kids {
-			present[lineKey(p, line{place: i, kid: k})] = true
-		}
+	for _, r := range p.rows {
+		present[rowKey(r)] = true
 	}
+	p.text = rowText(p.rows)
 	for k := range p.marked {
 		if !present[k] {
 			delete(p.marked, k)
 		}
 	}
-
 	cursor := p.cursor
 	m.refilter(p)
 	p.cursor = min(cursor, max(len(p.lines)-1, 0))
 	m.seek(p, keep)
 }
 
-// seek puts p's cursor on the line with key, where there is one.
+// rowText is what each row shows, plain. Sessions are aligned against each
+// other; a directory is its path, then the name git gives it where it has
+// one, unaligned, since one deep path would otherwise push every name aside.
+func rowText(rows []row) []string {
+	out := make([]string, len(rows))
+	var cells [][]string
+	var at []int
+	for i, r := range rows {
+		if r.kind == kindDir {
+			out[i] = r.cells[0]
+			if r.cells[1] != "" {
+				out[i] += "  " + r.cells[1]
+			}
+			continue
+		}
+		cells = append(cells, r.cells)
+		at = append(at, i)
+	}
+	for j, line := range align(cells) {
+		out[at[j]] = line
+	}
+	return out
+}
+
+// seek puts p's cursor on the row with key, where there is one.
 func (m *pickModel) seek(p *pane, key string) {
 	for i, ln := range p.lines {
-		if key != "" && lineKey(p, ln) == key {
+		if key != "" && rowKey(p.rows[ln.row]) == key {
 			p.cursor = i
 			return
 		}
 	}
 }
 
-// refilter recomputes p's lines for its query.
-//
-// With nothing typed every place is listed, and an expanded one is followed by
-// what it holds. A query is matched against each place, and against the label
-// of each session or worktree it holds: a place matching only itself is listed
-// closed, and one holding a match is listed open on its matches alone, so a
-// match is never shown without the place it stands in. Places are ranked by
-// their best match, and the matches within one by their own.
+// refilter recomputes p's lines for its query: every row with nothing typed;
+// otherwise the rows matching it, best first, with the way up and the offer of
+// a session left out, since neither is something a query looks for.
 func (m *pickModel) refilter(p *pane) {
 	p.lines = p.lines[:0]
-	if p.query == "" {
-		for i, pl := range p.places {
-			p.lines = append(p.lines, line{place: i, kid: -1})
-			if p.open[pl.row.dir] {
-				for k := range pl.kids {
-					p.lines = append(p.lines, line{place: i, kid: k})
-				}
-			}
-		}
-		return
-	}
-
 	type scored struct {
 		line
 		score int
 	}
-	type group struct {
-		best  int
-		lines []scored
-	}
-	var groups []group
-	for i, pl := range p.places {
-		g := group{best: -1}
-		head := scored{line: line{place: i, kid: -1}}
-		if s, pos, ok := m.match.match(p.text[i], p.query); ok {
-			head.score, head.pos, g.best = s, pos, s
-		}
-		var kids []scored
-		for k, kid := range pl.kids {
-			if kid.cells[0] == newSession {
-				continue
-			}
-			if s, pos, ok := m.match.match(kid.cells[0], p.query); ok {
-				kids = append(kids, scored{line: line{place: i, kid: k, pos: pos}, score: s})
-				g.best = max(g.best, s)
-			}
-		}
-		if g.best < 0 {
+	var hits []scored
+	for i, r := range p.rows {
+		if p.query == "" {
+			p.lines = append(p.lines, line{row: i})
 			continue
 		}
-		sort.SliceStable(kids, func(a, b int) bool { return kids[a].score > kids[b].score })
-		g.lines = append([]scored{head}, kids...)
-		groups = append(groups, g)
-	}
-	sort.SliceStable(groups, func(a, b int) bool { return groups[a].best > groups[b].best })
-	for _, g := range groups {
-		for _, s := range g.lines {
-			p.lines = append(p.lines, s.line)
+		if r.kind == kindUp || r.kind == kindOffer {
+			continue
+		}
+		if s, pos, ok := m.match.match(p.text[i], p.query); ok {
+			hits = append(hits, scored{line: line{row: i, pos: pos}, score: s})
 		}
 	}
+	sort.SliceStable(hits, func(a, b int) bool { return hits[a].score > hits[b].score })
+	for _, h := range hits {
+		p.lines = append(p.lines, h.line)
+	}
 }
 
-// current is the line under the cursor, the place it belongs to, and the row
-// it draws; nil where the list is empty.
-func (m *pickModel) current() (*line, *place, *row) {
+// at is the row drawn at line i, or nil past the end.
+func (p *pane) at(i int) *row {
+	if i < 0 || i >= len(p.lines) {
+		return nil
+	}
+	return &p.rows[p.lines[i].row]
+}
+
+// current is the row under the cursor, or nil where the list is empty.
+func (m *pickModel) current() *row {
 	p := m.top()
-	if p.cursor < 0 || p.cursor >= len(p.lines) {
-		return nil, nil, nil
-	}
-	ln := &p.lines[p.cursor]
-	pl := &p.places[ln.place]
-	if ln.kid < 0 {
-		return ln, pl, &pl.row
-	}
-	return ln, pl, &pl.kids[ln.kid]
-}
-
-// expanded reports whether the place at line i is followed by what it holds.
-func (p *pane) expanded(i int) bool {
-	return i+1 < len(p.lines) && p.lines[i+1].kid >= 0 && p.lines[i+1].place == p.lines[i].place
+	return p.at(p.cursor)
 }
 
 // fetchPreview supersedes whatever preview is in flight with one for the row
 // under the cursor.
 func (m *pickModel) fetchPreview() tea.Cmd {
 	m.seq++
-	_, _, r := m.current()
+	r := m.current()
 	return loadPreview(r, m.seq)
 }
 
@@ -349,7 +335,7 @@ func (m *pickModel) sizePreview() {
 // follows reports whether the preview anchors at its end: a session's
 // scrollback is read from where it stopped, a place's history from its newest.
 func (m *pickModel) follows() bool {
-	_, _, r := m.current()
+	r := m.current()
 	return r != nil && r.session != ""
 }
 
@@ -409,10 +395,14 @@ func (m *pickModel) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// relive rebuilds every view over live, keeping each cursor where it was.
+// relive rebuilds every view over live, keeping each cursor where it was. The
+// tree is walked again too, since a session standing somewhere new can bring
+// a hidden directory into it.
 func (m *pickModel) relive(live []Session) {
 	m.live = live
 	m.held = lastHeld(m.live)
+	files := m.panes[modeFiles]
+	files.dirs = tree(files.root, treeDepth, keepDirs(m.live, m.seen))
 	for _, p := range m.panes {
 		m.build(p)
 	}
@@ -512,8 +502,8 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		return m.enter()
 	case "shift+enter":
-		if ln, _, r := m.current(); ln != nil && (ln.kid < 0 || r.session != "") {
-			k := lineKey(p, *ln)
+		if r := m.current(); r != nil && (r.kind == kindSession || r.kind == kindDir) {
+			k := rowKey(*r)
 			p.marked[k] = !p.marked[k]
 			if !p.marked[k] {
 				delete(p.marked, k)
@@ -521,7 +511,7 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.move(1)
 	case "alt+enter":
-		if _, _, r := m.current(); r != nil && r.dir != "" {
+		if r := m.current(); r != nil && r.kind != kindUp && r.dir != "" {
 			m.result = outcome{name: sessionName(m.live), dir: r.dir, place: r.dir}
 			return m, tea.Quit
 		}
@@ -563,32 +553,21 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// enter opens or closes the place under the cursor, attaches the session, or
+// enter stands in the directory under the cursor, or the one above; attaches
+// the session, taking it after asking where another terminal has it open; or
 // starts one where the row offers to.
-//
-// Opening a place that a query found clears the query, since what it holds is
-// what was being looked for, and leaves the cursor on the place, open.
 func (m *pickModel) enter() (tea.Model, tea.Cmd) {
 	p := m.top()
-	ln, pl, r := m.current()
-	if ln == nil {
+	r := m.current()
+	if r == nil {
 		return m, nil
 	}
 	p.marked = map[string]bool{}
-	if ln.kid < 0 {
-		key := lineKey(p, *ln)
-		if p.query != "" {
-			p.query = ""
-			m.query.SetValue("")
-			p.open[pl.row.dir] = true
-		} else {
-			p.open[pl.row.dir] = !p.open[pl.row.dir]
-		}
-		m.refilter(p)
-		m.seek(p, key)
+	switch r.kind {
+	case kindDir, kindUp:
+		m.stand(p, r.dir)
 		return m, m.fetchPreview()
-	}
-	if r.session == "" {
+	case kindOffer:
 		m.result = outcome{name: sessionName(m.live), dir: r.dir, place: r.dir}
 		return m, tea.Quit
 	}
@@ -605,24 +584,19 @@ func (m *pickModel) enter() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-// killTargets is every session the marked lines stand for, or the line under
-// the cursor where nothing is marked: a place stands for everything it holds.
+// killTargets is every session the marked rows stand for, or the row under the
+// cursor where nothing is marked: a directory stands for every session in it
+// or below it.
 func (m *pickModel) killTargets() []Session {
 	p := m.top()
 	var picked []row
-	for i, pl := range p.places {
-		if p.marked[lineKey(p, line{place: i, kid: -1})] {
-			picked = append(picked, pl.row)
-			continue
-		}
-		for k, kid := range pl.kids {
-			if p.marked[lineKey(p, line{place: i, kid: k})] {
-				picked = append(picked, kid)
-			}
+	for _, r := range p.rows {
+		if p.marked[rowKey(r)] {
+			picked = append(picked, r)
 		}
 	}
 	if len(picked) == 0 {
-		if _, _, r := m.current(); r != nil {
+		if r := m.current(); r != nil {
 			picked = append(picked, *r)
 		}
 	}
@@ -694,44 +668,24 @@ func modeFile() string {
 	return filepath.Join(dir, "view")
 }
 
-// loadMode is the view last switched to, the repositories where none was.
+// loadMode is the view last switched to, the filesystem where none was.
 func loadMode() mode {
-	if readLast(modeFile()) == modeDirs.String() {
-		return modeDirs
+	if readLast(modeFile()) == modeSessions.String() {
+		return modeSessions
 	}
-	return modeRepos
+	return modeFiles
 }
 
 func saveMode(mo mode) { writeLast(modeFile(), mo.String()) }
 
-// opening puts the cursor where the picker is opened for: on the session the
-// pane last held, its place open around it; or, for a pane that has held
-// nothing, on the offer of a session where the pane stands.
+// opening puts the sessions view's cursor on the session the pane last held,
+// which a detach makes the one just left. The filesystem view always opens at
+// the top of ~.
 func (m *pickModel) opening() {
-	p := m.top()
-	want := ""
-	var dir string
-	switch {
-	case m.held != nil:
-		want = "s:" + m.held.Name
-	case m.start != "":
-		dir = placeOf(m.start)
+	if m.held == nil {
+		return
 	}
-	for i, pl := range p.places {
-		for k, kid := range pl.kids {
-			hit := want != "" && lineKey(p, line{place: i, kid: k}) == want
-			if want == "" && dir != "" && pl.row.dir == filepath.Clean(dir) && kid.cells[0] == newSession {
-				hit = true
-			}
-			if hit {
-				key := lineKey(p, line{place: i, kid: k})
-				p.open[pl.row.dir] = true
-				m.refilter(p)
-				m.seek(p, key)
-				return
-			}
-		}
-	}
+	m.seek(m.panes[modeSessions], "s:"+m.held.Name)
 }
 
 // endsHost reports whether attaching from inside host would end it.
@@ -745,16 +699,16 @@ func endsHost(live []Session, host string) bool {
 	return s != nil && s.Clients == "0"
 }
 
-// unseen is the place of every session the visits do not know yet, so that
-// a picker run without the daemon still learns where sessions are.
+// unseen is every directory a session stands in that the visits do not know
+// yet, so that a picker run without the daemon still learns where sessions are.
 func unseen(live []Session, seen visits) []string {
 	var out []string
 	for _, s := range live {
 		if s.Dir == "" {
 			continue
 		}
-		if _, ok := seen[placeOf(s.Dir)]; !ok {
-			out = append(out, placeOf(s.Dir))
+		if _, ok := seen[filepath.Clean(s.Dir)]; !ok {
+			out = append(out, filepath.Clean(s.Dir))
 		}
 	}
 	return out
@@ -762,10 +716,6 @@ func unseen(live []Session, seen visits) []string {
 
 // run presents the picker and attaches to what it answers.
 func run() error {
-	start, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -781,8 +731,7 @@ func run() error {
 		seen = loadVisits()
 	}
 
-	m := newPickModel(live, repos, ident, start, seen, loadMode())
-	m.home = home
+	m := newPickModel(live, repos, ident, home, seen, loadAttaches(), loadMode())
 	m.opening()
 
 	final, err := tea.NewProgram(m).Run()
@@ -803,9 +752,11 @@ func run() error {
 			return err
 		}
 	}
+	now := time.Now()
 	if res.place != "" {
-		recordVisits([]string{placeOf(res.place)}, time.Now())
+		recordVisits([]string{filepath.Clean(res.place)}, now)
 	}
+	recordAttach(res.name, now)
 	// Recorded before the exec, since there is no returning from it.
 	recordLast(res.name)
 	return attach(res.name, res.dir)

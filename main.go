@@ -20,21 +20,20 @@ var version = "devel"
 const usage = `zmd selects and starts zmx sessions.
 
 Usage:
-  zmd            Pick a session or a repository, and attach
+  zmd            Pick a session, or a directory to start one in, and attach
   zmd daemon     Hold the walk warm, and learn directories from where
                  sessions cd to
   zmd version    Print the version
 
-The picker lists places in two views: repositories below ~, and directories
-outside any that sessions stand in or have been worked in. Tab switches
-between them. A place opens in place into its sessions, its idle worktrees and
-the offer of another session. It opens on the session this pane last held.
+The picker has two views. The filesystem stands in one directory, opening at
+~, and lists the sessions there, the offer of another, and the directories
+four levels below. The sessions view lists every session. Tab switches.
 
 In the picker:
-  enter          open or close a place; attach a session, taking it after
-                 asking where another terminal has it open; start one on
-                 <new session> or an idle worktree
-  tab            switch between repos and dirs
+  enter          stand in a directory, or the one above on ..; attach a
+                 session, taking it after asking where another terminal has
+                 it open; start one on <new session>
+  tab            switch between the filesystem and the sessions
   shift-enter    mark, for a kill that takes several at once
   alt-enter      start another session where the cursor stands, whatever is
                  already running there

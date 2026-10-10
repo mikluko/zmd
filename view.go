@@ -5,210 +5,153 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"time"
 )
 
-// The picker lists places, in one of two views: the repositories below ~, or
-// the directories outside any repository that sessions stand in or have been
-// worked in. A place expands in place into what it holds: its sessions, the
-// worktrees with none, and the offer of another.
-//
-// The two views do not overlap. A session counts against the repository it
-// stands in, its worktrees included, and only a session in no repository the
-// walk found stands in a directory of its own.
+// The picker has two views. In the filesystem view it stands in one directory,
+// opening at ~, and lists the sessions standing there, the offer of another,
+// and the directories below to treeDepth levels; entering a directory stands
+// in it, and `..` stands in the one above. Repositories are directories with a
+// mark. The sessions view is every session, whatever directory it stands in.
 type mode int
 
 const (
-	modeRepos mode = iota
-	modeDirs
+	modeFiles mode = iota
+	modeSessions
 )
 
-// String is the mode as the prompt says it and the record keeps it.
+// String is the mode as the record keeps it.
 func (m mode) String() string {
-	if m == modeDirs {
-		return "dirs"
+	if m == modeSessions {
+		return "sessions"
 	}
-	return "repos"
+	return "files"
 }
 
-// place is a row of the list and the rows it expands into.
-type place struct {
-	row  row
-	kids []row
-}
+// rowKind is what a row is, which is what entering it does.
+type rowKind int
+
+const (
+	kindSession rowKind = iota // attach it
+	kindOffer                  // start a session in the directory stood in
+	kindDir                    // stand in it
+	kindUp                     // stand in the directory above
+)
 
 // newSession is the row that stands for starting one rather than joining one.
 const newSession = "<new session>"
 
-// owners maps each session to the repository root it counts against, among
-// those walked, or to "" where it stands in none of them.
-func owners(live []Session, roots map[string]bool) map[string]string {
-	out := make(map[string]string, len(live))
-	for _, s := range live {
-		if s.Dir == "" {
-			continue
+// fileRows is what the filesystem view shows standing in root: the way up
+// where there is one, the sessions standing exactly in root, the offer of
+// another, then the directories below.
+//
+// Directories worked in lead, the latest first, since that is where the next
+// session most likely goes; the rest follow by path. Each counts the sessions
+// standing in it or below it, so activity deep in a tree shows from its top.
+func fileRows(root, home string, live []Session, dirs []string, ident map[string]string, seen visits) []row {
+	root = filepath.Clean(root)
+	var out []row
+	if root != filepath.Clean(home) && root != string(filepath.Separator) {
+		out = append(out, row{kind: kindUp, dir: filepath.Dir(root), status: "   ", cells: []string{"..", ""}})
+	}
+	var here []Session
+	for _, s := range sortedSessions(live) {
+		if s.Dir != "" && filepath.Clean(s.Dir) == root {
+			here = append(here, s)
 		}
-		if root := repoRoot(s.Dir); roots[root] {
-			out[s.Name] = root
-		} else {
-			out[s.Name] = ""
+	}
+	for _, s := range here {
+		out = append(out, sessionRow(s, "", ""))
+	}
+	out = append(out, row{kind: kindOffer, dir: root, status: "   ", cells: []string{newSession, ""}})
+
+	var below []row
+	for _, dir := range dirs {
+		var found []Session
+		for _, s := range live {
+			if under(dir, s.Dir) {
+				found = append(found, s)
+			}
 		}
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			rel = dir
+		}
+		below = append(below, row{
+			kind:   kindDir,
+			dir:    dir,
+			found:  found,
+			count:  len(found),
+			status: mark(dir) + tally(len(found)) + " ",
+			cells:  []string{rel, ident[dir]},
+		})
+	}
+	sort.SliceStable(below, func(i, j int) bool {
+		a, b := seen[below[i].dir].Last, seen[below[j].dir].Last
+		if a != b {
+			return a > b
+		}
+		return below[i].cells[0] < below[j].cells[0]
+	})
+	return append(out, below...)
+}
+
+// sessionRows is every session, the one zmd attached latest first, a session
+// it never attached ranked by when zmx started it.
+//
+// What an agent in a session is doing will rank ahead of both once something
+// reports it; nothing does yet.
+func sessionRows(live []Session, attached map[string]int64, ident map[string]string) []row {
+	sorted := append([]Session(nil), live...)
+	when := func(s Session) int64 {
+		if t, ok := attached[s.Name]; ok {
+			return t
+		}
+		return s.Created
+	}
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if when(sorted[i]) != when(sorted[j]) {
+			return when(sorted[i]) > when(sorted[j])
+		}
+		return sorted[i].Name < sorted[j].Name
+	})
+	out := make([]row, 0, len(sorted))
+	for _, s := range sorted {
+		name, path := placeName(s.Dir, ident), shorten(s.Dir)
+		if name == path {
+			name = ""
+		}
+		out = append(out, sessionRow(s, name, path))
 	}
 	return out
 }
 
-// repoPlaces is one place per repository that is not a worktree.
-//
-// Expanded, a repository holds every session standing in it or in any
-// worktree cut from it, then each of those worktrees no session stands in,
-// since entering one is how a session is started there, then the offer of a
-// session at the repository itself.
-func repoPlaces(live []Session, repos []string, ident map[string]string, seen visits, now time.Time) []place {
-	roots := map[string]bool{}
-	for _, dir := range repos {
-		key := filepath.Clean(dir)
-		if repoRoot(key) == key {
-			roots[key] = true
-		}
+// sessionRow is a row for s, with what git calls where it stands and that
+// path where the view needs to say so.
+func sessionRow(s Session, name, path string) row {
+	return row{
+		kind:    kindSession,
+		dir:     s.Dir,
+		found:   []Session{s},
+		session: s.Name,
+		held:    s.heldElsewhere(),
+		status:  status(s.Dir, []Session{s}),
+		cells:   []string{sessionLabel(s), name, path},
 	}
-	owner := owners(live, roots)
-	trees := worktreesOf(repos)
-
-	sorted := sortedSessions(live)
-	var out []place
-	for root := range roots {
-		var found []Session
-		busy := map[string]bool{}
-		for _, s := range sorted {
-			if owner[s.Name] == root {
-				found = append(found, s)
-				busy[filepath.Clean(s.Dir)] = true
-			}
-		}
-		kids := sessionRows(found, root, ident)
-		for _, tree := range trees[root] {
-			if !busy[tree] {
-				kids = append(kids, row{
-					dir:    tree,
-					status: status(tree, nil),
-					cells:  []string{placeName(tree, ident), ""},
-				})
-			}
-		}
-		kids = append(kids, offerRow(root))
-		out = append(out, place{
-			row: row{
-				dir:    root,
-				found:  found,
-				count:  len(found),
-				trees:  len(trees[root]),
-				status: mark(root) + tally(len(found)) + " ",
-				cells:  []string{placeName(root, ident), shorten(filepath.Dir(root))},
-			},
-			kids: kids,
-		})
-	}
-	return ordered(out, seen, now)
 }
 
-// dirPlaces is one place per directory outside the walked repositories that a
-// session stands in, that has been worked in, or that the pane stands in. A
-// repository the walk did not reach, outside ~, is one of these.
-//
-// Expanded, a directory holds the sessions standing exactly there, then the
-// offer of another. A directory that has gone from disk since it was worked
-// in is not offered.
-func dirPlaces(live []Session, repos []string, start string, seen visits, now time.Time) []place {
-	roots := map[string]bool{}
-	for _, dir := range repos {
-		key := filepath.Clean(dir)
-		if repoRoot(key) == key {
-			roots[key] = true
+// keepDirs is the directories the tree lists however it would otherwise
+// leave them out: where sessions stand, and where work has been.
+func keepDirs(live []Session, seen visits) []string {
+	var out []string
+	for _, s := range live {
+		if s.Dir != "" {
+			out = append(out, s.Dir)
 		}
-	}
-	owner := owners(live, roots)
-
-	here := map[string][]Session{}
-	for _, s := range sortedSessions(live) {
-		if s.Dir != "" && owner[s.Name] == "" {
-			key := filepath.Clean(s.Dir)
-			here[key] = append(here[key], s)
-		}
-	}
-	dirs := map[string]bool{}
-	for dir := range here {
-		dirs[dir] = true
 	}
 	for dir := range seen {
-		if !roots[dir] && !roots[repoRoot(dir)] && isDir(dir) {
-			dirs[dir] = true
-		}
-	}
-	if start != "" && !roots[repoRoot(start)] {
-		dirs[placeOf(start)] = true
-	}
-
-	var out []place
-	for dir := range dirs {
-		found := here[dir]
-		out = append(out, place{
-			row: row{
-				dir:    dir,
-				found:  found,
-				count:  len(found),
-				status: " " + tally(len(found)) + " ",
-				cells:  []string{shorten(dir)},
-			},
-			kids: append(sessionRows(found, dir, nil), offerRow(dir)),
-		})
-	}
-	return ordered(out, seen, now)
-}
-
-// sessionRows is a row per session, saying where it stands where that is not
-// the place itself: a worktree by its name, a directory below by its path.
-func sessionRows(found []Session, at string, ident map[string]string) []row {
-	out := make([]row, 0, len(found))
-	for _, s := range found {
-		where := ""
-		if dir := filepath.Clean(s.Dir); dir != at {
-			where = placeName(dir, ident)
-		}
-		out = append(out, row{
-			dir:     s.Dir,
-			found:   []Session{s},
-			session: s.Name,
-			held:    s.heldElsewhere(),
-			status:  status(s.Dir, []Session{s}),
-			cells:   []string{sessionLabel(s), where},
-		})
+		out = append(out, dir)
 	}
 	return out
-}
-
-// offerRow is the offer of a new session in dir.
-func offerRow(dir string) row {
-	return row{dir: dir, status: "   ", cells: []string{newSession, ""}}
-}
-
-// ordered puts the places holding sessions first, then the rest, each by how
-// much and how lately they have been worked in, then by name.
-func ordered(places []place, seen visits, now time.Time) []place {
-	score := make(map[string]float64, len(places))
-	for _, p := range places {
-		score[p.row.dir] = seen.score(p.row.dir, now)
-	}
-	sort.SliceStable(places, func(i, j int) bool {
-		a, b := places[i].row, places[j].row
-		if (a.count > 0) != (b.count > 0) {
-			return a.count > 0
-		}
-		if score[a.dir] != score[b.dir] {
-			return score[a.dir] > score[b.dir]
-		}
-		return a.cells[0] < b.cells[0]
-	})
-	return places
 }
 
 // sortedSessions is live by directory, then by name.
@@ -226,21 +169,6 @@ func sortedSessions(live []Session) []Session {
 func isDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
-}
-
-// worktreesOf groups the walked checkouts by the repository they were cut
-// from, in the order the walk found them.
-func worktreesOf(repos []string) map[string][]string {
-	out := make(map[string][]string)
-	for _, dir := range repos {
-		key := filepath.Clean(dir)
-		root := repoRoot(key)
-		if root == "" || root == key {
-			continue
-		}
-		out[root] = append(out[root], key)
-	}
-	return out
 }
 
 // tally writes how many sessions are alive below a row in the one cell it
