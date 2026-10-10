@@ -496,3 +496,30 @@ func TestARewalkShowsANewRepository(t *testing.T) {
 		t.Errorf("%d places after a clone, want %d", got, before+1)
 	}
 }
+
+// PgDown and PgUp move a screenful of lines, and stop at either end rather
+// than refusing to move.
+func TestPageMovesAScreenful(t *testing.T) {
+	m, _ := sceneModel(t, modeRepos)
+	m.Update(tea.WindowSizeMsg{Width: 70, Height: 9})
+	seekLabel(t, m, "engine")
+	press(m, keyEnter)
+	m.top().cursor = 0
+	rows, last := m.listRows(), len(m.top().lines)-1
+	press(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if want := min(rows, last); m.top().cursor != want {
+		t.Errorf("after PgDown: cursor %d, want %d", m.top().cursor, want)
+	}
+	for range 5 {
+		press(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	if m.top().cursor != last {
+		t.Errorf("PgDown past the end: cursor %d, want %d", m.top().cursor, last)
+	}
+	for range 5 {
+		press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	}
+	if m.top().cursor != 0 {
+		t.Errorf("PgUp past the start: cursor %d, want 0", m.top().cursor)
+	}
+}

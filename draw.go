@@ -66,6 +66,22 @@ func (m *pickModel) listWidth() int {
 	return w
 }
 
+// listHeight is the height of the list's column inside the frame: all of it
+// but where the preview stands above.
+func (m *pickModel) listHeight() int {
+	_, h := m.inner()
+	if lay, _, ph := m.previewBox(); lay == layoutAbove {
+		return h - ph - 1
+	}
+	return h
+}
+
+// listRows is how many lines of the list show under its query, count and
+// hint lines.
+func (m *pickModel) listRows() int {
+	return max(m.listHeight()-3, 1)
+}
+
 // sizeQuery gives the query the list's width less its prompt, so a long query
 // scrolls within its line rather than running off the end of it. The input
 // works out that scrolling as keys arrive, so the width is set ahead of them.
@@ -85,7 +101,7 @@ func (m *pickModel) screen() string {
 	if w < 10 || h < 4 {
 		return ""
 	}
-	lay, pw, ph := m.previewBox()
+	lay, pw, _ := m.previewBox()
 	var lines []string
 	switch lay {
 	case layoutBeside:
@@ -98,7 +114,7 @@ func (m *pickModel) screen() string {
 	case layoutAbove:
 		lines = append(lines, m.previewView()...)
 		lines = append(lines, ruleStyle.Render(strings.Repeat("─", w)))
-		lines = append(lines, m.listView(w, h-ph-1)...)
+		lines = append(lines, m.listView(w, m.listHeight())...)
 	default:
 		lines = m.listView(w, h)
 	}
@@ -223,7 +239,7 @@ func (m *pickModel) listView(width, height int) []string {
 	for i := range head {
 		head[i] = fit(head[i], width)
 	}
-	rows := max(height-len(head), 1)
+	rows := m.listRows()
 	body := m.rowsView(width-1, rows)
 	bar := scrollbar(len(m.top().lines), rows, m.top().offset)
 	for i := range body {

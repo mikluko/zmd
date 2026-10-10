@@ -119,6 +119,7 @@ its fallback font all along.
 | `alt-enter` | Start another session where the cursor stands, whatever is already running there. |
 | `delete` | Kill the sessions the marked rows stand for, or the row under the cursor, after asking. `y` kills; any other key does not. |
 | `alt-delete` | Kill them without asking. |
+| `pgup`, `pgdown` | Move the cursor a screenful of lines. |
 | `alt-up`, `alt-down` | Scroll the preview. `alt-pgup` and `alt-pgdown` scroll it by the page. |
 | `esc` | Leave for the session this pane last attached to. Leave outright where there is none, or where another terminal has it. |
 

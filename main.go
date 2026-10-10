@@ -40,6 +40,7 @@ In the picker:
                  already running there
   delete         kill what the marked rows stand for, after asking;
                  alt-delete without asking
+  pgup/pgdown    move the cursor a screenful
   alt-up/down    scroll the preview; alt-pgup and alt-pgdown by the page
   esc            leave for the session this pane last held
 `

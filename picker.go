@@ -505,6 +505,10 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.move(-1)
 	case "down", "ctrl+n":
 		return m.move(1)
+	case "pgup":
+		return m.page(-1)
+	case "pgdown":
+		return m.page(1)
 	case "enter":
 		return m.enter()
 	case "shift+enter":
@@ -639,6 +643,17 @@ func (m *pickModel) move(delta int) (tea.Model, tea.Cmd) {
 	p := m.top()
 	next := p.cursor + delta
 	if next < 0 || next >= len(p.lines) {
+		return m, nil
+	}
+	p.cursor = next
+	return m, m.fetchPreview()
+}
+
+// page moves the cursor a screenful of lines, stopping at either end.
+func (m *pickModel) page(delta int) (tea.Model, tea.Cmd) {
+	p := m.top()
+	next := min(max(p.cursor+delta*m.listRows(), 0), max(len(p.lines)-1, 0))
+	if next == p.cursor {
 		return m, nil
 	}
 	p.cursor = next
