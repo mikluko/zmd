@@ -34,6 +34,7 @@ type pane struct {
 	text   []string // each row's aligned cells, plain, which the query is matched against
 	lines  []line
 	marked map[string]bool // by rowKey, so a mark survives a refilter
+	scope  string          // the checkout the sessions view is narrowed to, "" for every session
 	cursor int
 	offset int
 	query  string
@@ -157,6 +158,9 @@ func (m *pickModel) show(mo mode) {
 // where is what the prompt says, in at most width cells: a directory deep
 // enough to fill the line keeps its end, which is the part that differs.
 func (m *pickModel) where(width int) string {
+	if scope := m.panes[modeSessions].scope; m.mode == modeSessions && scope != "" {
+		return keepTail(shorten(scope), max(width, 8))
+	}
 	if m.mode != modeBrowse {
 		return m.mode.String()
 	}
@@ -208,7 +212,12 @@ func (m *pickModel) build(p *pane) {
 	case modeCheckouts:
 		p.rows = checkoutRows(m.home, m.live, m.repos, m.seen)
 	case modeSessions:
-		p.rows = sessionRows(m.live, m.attached)
+		if p.scope == "" {
+			p.rows = sessionRows(m.live, m.attached)
+		} else {
+			p.rows = append(sessionRows(owned(p.scope, m.live, m.repos), m.attached),
+				row{kind: kindOffer, dir: p.scope, status: "   ", cells: []string{newSession, ""}})
+		}
 	default:
 		p.rows = fileRows(p.root, m.home, m.live, p.dirs, m.seen)
 	}
@@ -477,6 +486,11 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "tab":
+		if m.mode == modeSessions && p.scope != "" {
+			m.narrow("")
+			m.show(modeCheckouts)
+			return m, m.fetchPreview()
+		}
 		m.show((m.mode + 1) % modes)
 		saveMode(m.mode)
 		return m, m.fetchPreview()
@@ -556,7 +570,9 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // enter stands in the directory under the cursor, or the one above; attaches
 // the session, taking it after asking where another terminal has it open; or
-// starts one in the checkout, or where the row offers to.
+// starts one where the row offers to. A checkout with no session starts one;
+// one holding sessions narrows the sessions view to them, the offer of another
+// last, since switching between them is what that view does.
 func (m *pickModel) enter() (tea.Model, tea.Cmd) {
 	p := m.top()
 	r := m.current()
@@ -568,7 +584,15 @@ func (m *pickModel) enter() (tea.Model, tea.Cmd) {
 	case kindDir, kindUp:
 		m.stand(p, r.dir)
 		return m, m.fetchPreview()
-	case kindOffer, kindCheckout:
+	case kindCheckout:
+		if r.count > 0 {
+			m.narrow(r.dir)
+			m.show(modeSessions)
+			return m, m.fetchPreview()
+		}
+		m.result = outcome{name: sessionName(m.live), dir: r.dir, place: r.dir}
+		return m, tea.Quit
+	case kindOffer:
 		m.result = outcome{name: sessionName(m.live), dir: r.dir, place: r.dir}
 		return m, tea.Quit
 	}
@@ -583,6 +607,14 @@ func (m *pickModel) enter() (tea.Model, tea.Cmd) {
 	}
 	m.result = outcome{name: r.session, place: r.dir}
 	return m, tea.Quit
+}
+
+// narrow narrows the sessions view to the sessions in checkout, or widens it
+// back to every session where checkout is "", with the cursor at the top.
+func (m *pickModel) narrow(checkout string) {
+	p := m.panes[modeSessions]
+	p.scope, p.query, p.cursor, p.offset = checkout, "", 0, 0
+	m.build(p)
 }
 
 // killTargets is every session the marked rows stand for, or the row under the

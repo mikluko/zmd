@@ -21,10 +21,12 @@ import (
 // written past align rather than through it.
 const statusWidth = 3
 
-// A session with a client attached is filled, and one with none is hollow.
+// A session with a client attached is filled, and one with none is hollow;
+// a row standing for both kinds is half filled.
 const (
 	attached = "●"
 	detached = "○"
+	mixed    = "◐"
 )
 
 // repository and worktree mark the directories git tracks: a repository's own
@@ -55,18 +57,26 @@ type row struct {
 }
 
 // circle renders the sessions a row stands for in the one cell they get:
-// filled where any has a client attached, hollow where none has, blank where
-// there are none. How many there are is not what the cell answers.
+// filled where every one has a client attached, hollow where none has, half
+// filled where some have, blank where there are none. How many there are is
+// not what the cell answers.
 func circle(found []Session) string {
-	if len(found) == 0 {
-		return " "
-	}
+	held := 0
 	for _, s := range found {
 		if s.Clients != "0" && s.Clients != "" {
-			return attached
+			held++
 		}
 	}
-	return detached
+	switch {
+	case len(found) == 0:
+		return " "
+	case held == len(found):
+		return attached
+	case held == 0:
+		return detached
+	default:
+		return mixed
+	}
 }
 
 // mark renders what git makes of dir in the one cell it gets: a repository

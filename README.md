@@ -17,8 +17,10 @@ zmd
 last.
 
 **The checkouts.** Every repository and worktree below `~`, one row each,
-marked by which it is and counting the sessions standing in it. `enter`
-starts a session there: this is what the picker is mostly for. Checkouts a
+marked by which it is and whether sessions stand in it. `enter` on one with
+none starts a session there, which is what the picker is mostly for; on one
+holding sessions it lists them, with the offer of another last, and `tab`
+goes back to the checkouts. Checkouts a
 session has worked in lead, the latest first; the rest follow by path.
 
 **The sessions.** Every session, wherever it stands, the one zmd attached
@@ -64,7 +66,7 @@ not things a query looks for, and drop out while one is typed.
  │││
  ││└─ reserved
  ││
- │└── ● a client attached, ○ sessions but no client, blank no session
+ │└── ● all attached, ◐ some attached, ○ none attached, blank no session
  │
  └─── what git makes of the directory:  a repository's own checkout,  a worktree cut from one
 ```
@@ -74,8 +76,8 @@ name below it starts in the same place. The third cell is empty: it is held
 for what the agent in a session is doing, which nothing sets yet.
 
 On a checkout or directory the second cell stands for every session there:
-filled where any has a client, hollow where none has. How many there are is
-not what it answers.
+filled where every one has a client, hollow where none has, half filled where
+some have. How many there are is not what it answers.
 
 A session goes by its title where something has set one with
 `zmx set <name> title=…`, and by its name where nothing has.
@@ -84,7 +86,7 @@ A session goes by its title where something has set one with
 
 | | |
 | --- | --- |
-| `enter` | On a checkout, start a session there. On a session, attach it, taking it after asking where another terminal has it open. In browse: on a directory, stand in it; on `..`, stand in the one above; on `<new session>`, start one where the picker stands. |
+| `enter` | On a checkout, start a session there if none stands in it, or list those that do, with the offer of another. On a session, attach it, taking it after asking where another terminal has it open. In browse: on a directory, stand in it; on `..`, stand in the one above; on `<new session>`, start one where the picker stands. |
 | `tab` | Cycle through checkouts, sessions and browse. |
 | `shift-enter` | Mark, for a kill that takes several at once. A marked directory stands for every session in it or below it. |
 | `alt-enter` | Start another session where the cursor stands, whatever is already running there. |

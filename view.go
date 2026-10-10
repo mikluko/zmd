@@ -110,38 +110,17 @@ func fileRows(root, home string, live []Session, dirs []string, seen visits) []r
 // Checkouts worked in lead, the latest first, since that is where the next
 // session most likely goes; the rest follow by path.
 func checkoutRows(home string, live []Session, repos []string, seen visits) []row {
-	owner := map[string]string{}
-	for _, s := range live {
-		best := ""
-		for _, dir := range repos {
-			if under(dir, s.Dir) && len(dir) > len(best) {
-				best = dir
-			}
-		}
-		owner[s.Name] = best
-	}
 	latest := map[string]int64{}
 	for dir, v := range seen {
-		best := ""
-		for _, c := range repos {
-			if under(c, dir) && len(c) > len(best) {
-				best = c
-			}
-		}
-		if best != "" && v.Last > latest[best] {
-			latest[best] = v.Last
+		if c := checkoutOf(dir, repos); c != "" && v.Last > latest[c] {
+			latest[c] = v.Last
 		}
 	}
 
 	out := make([]row, 0, len(repos))
 	for _, dir := range repos {
 		dir = filepath.Clean(dir)
-		var found []Session
-		for _, s := range live {
-			if owner[s.Name] == dir {
-				found = append(found, s)
-			}
-		}
+		found := owned(dir, live, repos)
 		rel, err := filepath.Rel(home, dir)
 		if err != nil || strings.HasPrefix(rel, "..") {
 			rel = dir
@@ -162,6 +141,29 @@ func checkoutRows(home string, live []Session, repos []string, seen visits) []ro
 		}
 		return out[i].cells[0] < out[j].cells[0]
 	})
+	return out
+}
+
+// checkoutOf is the checkout dir stands in: the deepest of repos it is in or
+// below, or "" where it is in none.
+func checkoutOf(dir string, repos []string) string {
+	best := ""
+	for _, c := range repos {
+		if under(c, dir) && len(c) > len(best) {
+			best = filepath.Clean(c)
+		}
+	}
+	return best
+}
+
+// owned is the sessions standing in checkout and in no checkout deeper in it.
+func owned(checkout string, live []Session, repos []string) []Session {
+	var out []Session
+	for _, s := range live {
+		if s.Dir != "" && checkoutOf(s.Dir, repos) == filepath.Clean(checkout) {
+			out = append(out, s)
+		}
+	}
 	return out
 }
 

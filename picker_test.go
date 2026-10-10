@@ -171,15 +171,52 @@ func TestTabCyclesTheViewsAndRemembersIt(t *testing.T) {
 	}
 }
 
-// Entering a checkout starts a session there.
-func TestEnterOnACheckoutStartsASessionThere(t *testing.T) {
+// Entering a checkout with no session starts one there.
+func TestEnterOnAnIdleCheckoutStartsASessionThere(t *testing.T) {
 	m, root := sceneModel(t, modeCheckouts)
 	_, _, api, _ := sceneDirs(root)
+	var rest []Session
+	for _, s := range m.live {
+		if s.Dir != api {
+			rest = append(rest, s)
+		}
+	}
+	m.relive(rest)
 	rel, _ := filepath.Rel(root, api)
 	seekLabel(t, m, rel)
 	m.Update(keyEnter)
 	if m.result.dir != api || !strings.HasPrefix(m.result.name, "zmd.") {
-		t.Errorf("enter on a checkout: result %+v", m.result)
+		t.Errorf("enter on an idle checkout: result %+v", m.result)
+	}
+}
+
+// Entering a checkout holding sessions narrows the sessions view to them, the
+// offer of another last; tab goes back to the checkouts and widens it again.
+func TestEnterOnABusyCheckoutListsItsSessions(t *testing.T) {
+	m, root := sceneModel(t, modeCheckouts)
+	engine, _, _, _ := sceneDirs(root)
+	rel, _ := filepath.Rel(root, engine)
+	seekLabel(t, m, rel)
+	m.Update(keyEnter)
+	if m.mode != modeSessions || m.result.name != "" {
+		t.Fatalf("after enter: %v, result %+v", m.mode, m.result)
+	}
+	got := labels(m)
+	if len(got) != 3 || got[2] != newSession {
+		t.Fatalf("lines %q, want engine's two sessions and the offer", got)
+	}
+	seekLabel(t, m, newSession)
+	m.Update(keyEnter)
+	if m.result.dir != engine {
+		t.Errorf("the offer starts in %q, want %q", m.result.dir, engine)
+	}
+
+	m, _ = sceneModel(t, modeCheckouts)
+	seekLabel(t, m, rel)
+	m.Update(keyEnter)
+	press(m, keyTab)
+	if m.mode != modeCheckouts || m.panes[modeSessions].scope != "" {
+		t.Errorf("tab from the narrowed sessions: %v, scope %q", m.mode, m.panes[modeSessions].scope)
 	}
 }
 

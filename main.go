@@ -30,7 +30,8 @@ where enter starts a session; every session, where enter attaches; and
 browse, which stands in a directory and lists what is below it.
 
 In the picker:
-  enter          start a session in a checkout; attach a session, taking it
+  enter          start a session in a checkout with none, or list the
+                 sessions of one that has them; attach a session, taking it
                  after asking where another terminal has it open; in browse,
                  stand in a directory, or the one above on ..
   tab            cycle through checkouts, sessions and browse

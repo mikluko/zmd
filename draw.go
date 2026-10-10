@@ -175,7 +175,11 @@ func (m *pickModel) header() string {
 		return errStyle.Render(m.status)
 	}
 	keys := m.hints()
-	keys = append(keys, "⇥ "+((m.mode+1)%modes).String())
+	next := (m.mode + 1) % modes
+	if m.mode == modeSessions && m.top().scope != "" {
+		next = modeCheckouts
+	}
+	keys = append(keys, "⇥ "+next.String())
 	if m.held != nil {
 		keys = append(keys, "⎋ leave")
 	}
@@ -198,6 +202,9 @@ func (m *pickModel) hints() []string {
 		return []string{"⏎ start"}
 	case r.kind == kindCheckout:
 		keys := []string{"⏎ start", "⇧⏎ mark"}
+		if r.count > 0 {
+			keys = []string{"⏎ sessions", "⌥⏎ new", "⇧⏎ mark"}
+		}
 		if r.count > 0 {
 			keys = append(keys, "⌦ kill")
 		}

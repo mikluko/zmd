@@ -34,8 +34,9 @@ func scene(t *testing.T) (root string, found []Session) {
 	}
 }
 
-// One cell, however many stand there: filled where any has a client attached,
-// hollow where none has, blank where there are none.
+// One cell, however many stand there: filled where every one has a client
+// attached, hollow where none has, half filled where some have, blank where
+// there are none.
 func TestCircleSaysWhetherAnyIsAttached(t *testing.T) {
 	one, none, some := Session{Clients: "1"}, Session{Clients: "0"}, Session{Clients: ""}
 	for _, c := range []struct {
@@ -48,7 +49,8 @@ func TestCircleSaysWhetherAnyIsAttached(t *testing.T) {
 		{"one, a client", []Session{one}, attached},
 		{"one, no count at all", []Session{some}, detached},
 		{"two, no client", []Session{none, none}, detached},
-		{"three, one attached", []Session{none, one, none}, attached},
+		{"three, one attached", []Session{none, one, none}, mixed},
+		{"two, both attached", []Session{one, one}, attached},
 	} {
 		if got := circle(c.found); got != c.want {
 			t.Errorf("%s: rendered %q, want %q", c.what, got, c.want)
