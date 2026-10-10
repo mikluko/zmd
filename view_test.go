@@ -66,11 +66,11 @@ func TestFileRowsStandingSomewhere(t *testing.T) {
 	src := filepath.Join(root, "src")
 	rows := fileRows(src, root, live, tree(src, treeDepth, nil), seen)
 	got := labelsOf(rows)
-	if got[0] != ".." || got[1] != newSession || got[2] != "acme/api" {
+	if got[0] != ".." || got[1] != newSession || got[2] != shorten(api) {
 		t.Fatalf("rows %q, want .., the offer, then acme/api as the latest worked in", got)
 	}
 	for _, r := range rows {
-		if r.cells[0] == "acme" && r.count != 4 {
+		if r.dir == filepath.Join(src, "acme") && r.count != 4 {
 			t.Errorf("acme counts %d sessions, want the four at or below it", r.count)
 		}
 	}

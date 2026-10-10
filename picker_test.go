@@ -79,7 +79,7 @@ func seekLabel(t *testing.T, m *pickModel, label string) {
 // cursor back on the directory just left.
 func TestEnterStandsInADirectoryAndDotDotLeavesIt(t *testing.T) {
 	m, root := sceneModel(t, modeBrowse)
-	seekLabel(t, m, "src")
+	seekLabel(t, m, shorten(filepath.Join(root, "src")))
 	press(m, keyEnter)
 	if got := m.panes[modeBrowse].root; got != filepath.Join(root, "src") {
 		t.Fatalf("standing in %q, want src", got)
@@ -92,7 +92,7 @@ func TestEnterStandsInADirectoryAndDotDotLeavesIt(t *testing.T) {
 	if got := m.panes[modeBrowse].root; got != root {
 		t.Fatalf("after ..: standing in %q, want %q", got, root)
 	}
-	if r := m.current(); r == nil || r.cells[0] != "src" {
+	if r := m.current(); r == nil || r.cells[0] != shorten(filepath.Join(root, "src")) {
 		t.Errorf("cursor on %+v, want src", r)
 	}
 }
@@ -120,10 +120,11 @@ func TestEnterAttachesASessionAndStartsAnOffer(t *testing.T) {
 // A query narrows what is below to its matches, and the way up and the offer
 // are not among them.
 func TestAQueryMatchesWhatIsBelow(t *testing.T) {
-	m, _ := sceneModel(t, modeBrowse)
+	m, root := sceneModel(t, modeBrowse)
+	_, _, api, _ := sceneDirs(root)
 	press(m, typed("acme/api")...)
 	got := labels(m)
-	if len(got) == 0 || got[0] != "src/acme/api" {
+	if len(got) == 0 || got[0] != shorten(api) {
 		t.Errorf("lines %q, want src/acme/api first", got)
 	}
 	for _, l := range got {
@@ -223,8 +224,9 @@ func TestEnterOnABusyCheckoutListsItsSessions(t *testing.T) {
 
 // Marking a directory marks every session in it or below it for a kill.
 func TestKillTargetsPreferMarks(t *testing.T) {
-	m, _ := sceneModel(t, modeBrowse)
-	seekLabel(t, m, "src/acme/engine")
+	m, root := sceneModel(t, modeBrowse)
+	engine, _, _, _ := sceneDirs(root)
+	seekLabel(t, m, shorten(engine))
 	press(m, keyMark)
 	if got := m.killTargets(); len(got) != 3 {
 		t.Errorf("targets %v, want engine's three", got)
@@ -311,7 +313,7 @@ func TestOpeningLandsOnTheHeldSession(t *testing.T) {
 // A session's scrollback opens at its end and a directory's history at its
 // start.
 func TestPreviewOpensWhereItIsRead(t *testing.T) {
-	m, _ := sceneModel(t, modeSessions)
+	m, root := sceneModel(t, modeSessions)
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 22})
 	long := strings.Repeat("line\n", 100)
 	seekLabel(t, m, "retry-bug")
@@ -320,7 +322,7 @@ func TestPreviewOpensWhereItIsRead(t *testing.T) {
 		t.Errorf("a session previews from offset %d, want its end", m.preview.YOffset())
 	}
 	press(m, keyTab)
-	seekLabel(t, m, "src")
+	seekLabel(t, m, shorten(filepath.Join(root, "src")))
 	m.Update(previewMsg{seq: m.seq, text: long})
 	if !m.preview.AtTop() {
 		t.Errorf("a directory previews from offset %d, want its start", m.preview.YOffset())

@@ -79,17 +79,13 @@ func fileRows(root, home string, live []Session, dirs []string, seen visits) []r
 				found = append(found, s)
 			}
 		}
-		rel, err := filepath.Rel(root, dir)
-		if err != nil {
-			rel = dir
-		}
 		below = append(below, row{
 			kind:   kindDir,
 			dir:    dir,
 			found:  found,
 			count:  len(found),
 			status: status(dir, found),
-			cells:  []string{rel},
+			cells:  []string{shorten(dir)},
 		})
 	}
 	sort.SliceStable(below, func(i, j int) bool {

@@ -38,9 +38,9 @@ below it, four levels down:
      ..                                  enter: stand in the directory above
    ● retry-bug
      <new session>                       enter: start a session here
- 2 api                                   enter: stand in it
-   api/internal
-   web
+ ● ~/Forge/acme/api                       enter: stand in it
+   ~/Forge/acme/api/internal
+   ~/Forge/acme/web
 ```
 
 `enter` on a directory stands in it, and `..` stands in the one above. A
