@@ -169,6 +169,9 @@ func TestQuestionCountsWhatAKillTakes(t *testing.T) {
 // both with a `.git`.
 func TestRepositoriesFindsReposAndWorktrees(t *testing.T) {
 	root, _ := scene(t)
+	// A plugin cache under ~/.claude is a repository nobody works in; the
+	// walk enters .claude only for the worktrees kept there.
+	repoAt(t, filepath.Join(root, ".claude", "plugins", "cache", "plugin"))
 	found := repositories(root)
 
 	// Sorted, so acme leads acme and a worktree follows the repository

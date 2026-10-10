@@ -175,11 +175,7 @@ func (m *pickModel) header() string {
 		return errStyle.Render(m.status)
 	}
 	keys := m.hints()
-	if m.mode == modeFiles {
-		keys = append(keys, "⇥ sessions")
-	} else {
-		keys = append(keys, "⇥ files")
-	}
+	keys = append(keys, "⇥ "+((m.mode+1)%modes).String())
 	if m.held != nil {
 		keys = append(keys, "⎋ leave")
 	}
@@ -200,6 +196,12 @@ func (m *pickModel) hints() []string {
 		return []string{"⏎ up"}
 	case r.kind == kindOffer:
 		return []string{"⏎ start"}
+	case r.kind == kindCheckout:
+		keys := []string{"⏎ start", "⇧⏎ mark"}
+		if r.count > 0 {
+			keys = append(keys, "⌦ kill")
+		}
+		return keys
 	case r.kind == kindDir:
 		keys := []string{"⏎ in", "⌥⏎ new", "⇧⏎ mark"}
 		if r.count > 0 {
@@ -217,7 +219,7 @@ func (m *pickModel) hints() []string {
 // the view, the marked rows after it, and a rule to the edge.
 func (m *pickModel) info(width int) string {
 	p := m.top()
-	counts := func(r row) bool { return r.kind == kindSession || r.kind == kindDir }
+	counts := func(r row) bool { return r.kind == kindSession || r.kind == kindDir || r.kind == kindCheckout }
 	shown, total := 0, 0
 	for _, ln := range p.lines {
 		if counts(p.rows[ln.row]) {
@@ -282,7 +284,7 @@ func (m *pickModel) rowsView(width, height int) []string {
 			status = strings.Repeat(" ", statusWidth)
 		}
 		shown := highlight(p.text[ln.row], ln.pos, on)
-		if r.kind == kindDir {
+		if r.kind == kindDir || r.kind == kindCheckout {
 			shown = keepTail(shown, width-1-1-statusWidth)
 		}
 		body := ansi.Truncate(marker+status+shown, width-1, "…")

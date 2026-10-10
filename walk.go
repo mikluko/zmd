@@ -112,6 +112,11 @@ func repositories(root string) []string {
 		if path != root && (skipped[name] || strings.HasPrefix(name, ".") && name != ".claude") {
 			return fs.SkipDir
 		}
+		// .claude is entered only for the worktrees a repository keeps there,
+		// and not for the plugin caches and marketplaces ~/.claude holds.
+		if filepath.Base(filepath.Dir(path)) == ".claude" && name != "worktrees" {
+			return fs.SkipDir
+		}
 		if marker, err := os.Stat(filepath.Join(path, ".git")); err == nil && marker != nil {
 			mu.Lock()
 			found = append(found, path)

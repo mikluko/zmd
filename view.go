@@ -5,36 +5,45 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 )
 
-// The picker has two views. In the filesystem view it stands in one directory,
-// opening at ~, and lists the sessions standing there, the offer of another,
-// and the directories below to treeDepth levels; entering a directory stands
-// in it, and `..` stands in the one above. Repositories and worktrees
-// are directories with marks of their own. The sessions view is every session, whatever directory it stands in.
+// The picker has three views, which tab cycles through. The checkouts view is
+// every repository and worktree below ~, and entering one starts a session
+// there. The sessions view is every session, wherever it stands. The browse
+// view stands in one directory, opening at ~, and lists the sessions standing
+// there, the offer of another, and the directories below to treeDepth levels;
+// entering a directory stands in it, and `..` stands in the one above.
 type mode int
 
 const (
-	modeFiles mode = iota
+	modeCheckouts mode = iota
 	modeSessions
+	modeBrowse
+	modes
 )
 
-// String is the mode as the record keeps it.
+// String is the mode as the prompt says it and the record keeps it.
 func (m mode) String() string {
-	if m == modeSessions {
+	switch m {
+	case modeSessions:
 		return "sessions"
+	case modeBrowse:
+		return "browse"
+	default:
+		return "checkouts"
 	}
-	return "files"
 }
 
 // rowKind is what a row is, which is what entering it does.
 type rowKind int
 
 const (
-	kindSession rowKind = iota // attach it
-	kindOffer                  // start a session in the directory stood in
-	kindDir                    // stand in it
-	kindUp                     // stand in the directory above
+	kindSession  rowKind = iota // attach it
+	kindOffer                   // start a session in the directory stood in
+	kindDir                     // stand in it
+	kindUp                      // stand in the directory above
+	kindCheckout                // start a session in it
 )
 
 // newSession is the row that stands for starting one rather than joining one.
@@ -93,6 +102,68 @@ func fileRows(root, home string, live []Session, dirs []string, seen visits) []r
 		return below[i].cells[0] < below[j].cells[0]
 	})
 	return append(out, below...)
+}
+
+// checkoutRows is every repository and worktree the walk found, each counting
+// the sessions standing in it or below it that no checkout deeper in owns, so
+// a worktree kept inside its repository counts its own.
+//
+// Checkouts worked in lead, the latest first, since that is where the next
+// session most likely goes; the rest follow by path.
+func checkoutRows(home string, live []Session, repos []string, seen visits) []row {
+	owner := map[string]string{}
+	for _, s := range live {
+		best := ""
+		for _, dir := range repos {
+			if under(dir, s.Dir) && len(dir) > len(best) {
+				best = dir
+			}
+		}
+		owner[s.Name] = best
+	}
+	latest := map[string]int64{}
+	for dir, v := range seen {
+		best := ""
+		for _, c := range repos {
+			if under(c, dir) && len(c) > len(best) {
+				best = c
+			}
+		}
+		if best != "" && v.Last > latest[best] {
+			latest[best] = v.Last
+		}
+	}
+
+	out := make([]row, 0, len(repos))
+	for _, dir := range repos {
+		dir = filepath.Clean(dir)
+		var found []Session
+		for _, s := range live {
+			if owner[s.Name] == dir {
+				found = append(found, s)
+			}
+		}
+		rel, err := filepath.Rel(home, dir)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			rel = dir
+		}
+		out = append(out, row{
+			kind:   kindCheckout,
+			dir:    dir,
+			found:  found,
+			count:  len(found),
+			status: mark(dir) + tally(len(found)) + " ",
+			cells:  []string{rel},
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := latest[out[i].dir], latest[out[j].dir]
+		if a != b {
+			return a > b
+		}
+		return out[i].cells[0] < out[j].cells[0]
+	})
+	return out
 }
 
 // sessionRows is every session, the one zmd attached latest first, a session

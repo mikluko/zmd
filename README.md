@@ -1,7 +1,7 @@
 # zmd
 
-Session navigation for [zmx](https://zmx.sh): stand in a directory, see the
-sessions there and the directories below, and attach or start one.
+Session navigation for [zmx](https://zmx.sh): start a session in a checkout,
+or switch to one already running.
 
 zmx persists terminal sessions and, by design, provides no windows, tabs or
 splits. What it also has no opinion about is *which* session you want. This
@@ -11,12 +11,23 @@ fills that gap and nothing else.
 zmd
 ```
 
-## Two views
+## Three views
 
-`tab` switches between them, and the picker reopens in whichever you switched
-to last.
+`tab` cycles through them, and the picker reopens in whichever you switched to
+last.
 
-**The filesystem.** The picker stands in one directory, opening at `~`, and
+**The checkouts.** Every repository and worktree below `~`, one row each,
+marked by which it is and counting the sessions standing in it. `enter`
+starts a session there: this is what the picker is mostly for. Checkouts a
+session has worked in lead, the latest first; the rest follow by path.
+
+**The sessions.** Every session, wherever it stands, the one zmd attached
+latest first; a session zmd never attached ranks by when zmx started it.
+`enter` attaches it.
+
+**Browse.** For the rarer session somewhere that is not a checkout yet, say
+where a new repository is about to be made. The picker stands in one
+directory, opening at `~`, and
 lists the sessions standing there, the offer of another, and the directories
 below it, four levels down:
 
@@ -40,10 +51,7 @@ where the next session most likely goes; the rest follow by path. The tree
 leaves out hidden directories, caches, build output, `Library` and
 application bundles, save a directory a session stands in or has worked in.
 
-**The sessions.** Every session, wherever it stands, the one zmd attached
-latest first; a session zmd never attached ranks by when zmx started it.
-
-**Typing narrows the view**, matching a directory's path and name or a
+**Typing narrows the view**, matching a checkout's or directory's path, or a
 session's title, name and place. The way up and the offer of a session are
 not things a query looks for, and drop out while one is typed.
 
@@ -56,7 +64,7 @@ not things a query looks for, and drop out while one is typed.
  │││
  ││└─ reserved
  ││
- │└── a session: ○ no client, ● a client; a directory: how many sessions in it or below
+ │└── a session: ○ no client, ● a client; a checkout or directory: how many sessions it holds
  │
  └─── what git makes of the directory:  a repository,  a worktree cut from one
 ```
@@ -75,8 +83,8 @@ A session goes by its title where something has set one with
 
 | | |
 | --- | --- |
-| `enter` | On a directory, stand in it; on `..`, stand in the one above. On a session, attach it, taking it after asking where another terminal has it open. On `<new session>`, start one where the picker stands. |
-| `tab` | Switch between the filesystem and the sessions. |
+| `enter` | On a checkout, start a session there. On a session, attach it, taking it after asking where another terminal has it open. In browse: on a directory, stand in it; on `..`, stand in the one above; on `<new session>`, start one where the picker stands. |
+| `tab` | Cycle through checkouts, sessions and browse. |
 | `shift-enter` | Mark, for a kill that takes several at once. A marked directory stands for every session in it or below it. |
 | `alt-enter` | Start another session where the cursor stands, whatever is already running there. |
 | `delete` | Kill the sessions the marked rows stand for, or the row under the cursor, after asking. `y` kills; any other key does not. |
@@ -179,8 +187,9 @@ second and credits a visit to every directory a session moves to, which is
 what puts the directories worked in first; see
 [How directories are learned](#how-directories-are-learned).
 
-It also walks the repositories below `~` and serves them over its socket,
-which no picker reads any more.
+It also walks the checkouts below `~` and holds the result, so a picker asks
+rather than walks: 290ms before a single row was drawn, against 3ms. A picker
+that cannot reach it walks for itself.
 
 The socket sits beside the rest of the state, or wherever `ZMD_DECK_DIR`
 says — an SSH `RemoteForward` being the case that needs to choose.

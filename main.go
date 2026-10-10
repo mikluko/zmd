@@ -20,20 +20,20 @@ var version = "devel"
 const usage = `zmd selects and starts zmx sessions.
 
 Usage:
-  zmd            Pick a session, or a directory to start one in, and attach
-  zmd daemon     Learn which directories are worked in from where sessions
-                 cd to
+  zmd            Pick a checkout to start a session in, or a session, and attach
+  zmd daemon     Hold the walk of checkouts warm, and learn which directories
+                 are worked in from where sessions cd to
   zmd version    Print the version
 
-The picker has two views. The filesystem stands in one directory, opening at
-~, and lists the sessions there, the offer of another, and the directories
-four levels below. The sessions view lists every session. Tab switches.
+The picker has three views, which tab cycles through: the checkouts below ~,
+where enter starts a session; every session, where enter attaches; and
+browse, which stands in a directory and lists what is below it.
 
 In the picker:
-  enter          stand in a directory, or the one above on ..; attach a
-                 session, taking it after asking where another terminal has
-                 it open; start one on <new session>
-  tab            switch between the filesystem and the sessions
+  enter          start a session in a checkout; attach a session, taking it
+                 after asking where another terminal has it open; in browse,
+                 stand in a directory, or the one above on ..
+  tab            cycle through checkouts, sessions and browse
   shift-enter    mark, for a kill that takes several at once
   alt-enter      start another session where the cursor stands, whatever is
                  already running there

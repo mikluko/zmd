@@ -108,10 +108,14 @@ func status(dir string, found []Session) string {
 
 // empty is the line a view with nothing to show puts in place of a list.
 func empty(mo mode) string {
-	if mo == modeSessions {
+	switch mo {
+	case modeCheckouts:
+		return "no repositories below ~"
+	case modeSessions:
 		return "nothing running"
+	default:
+		return "nothing here"
 	}
-	return "nothing here"
 }
 
 // takes is what the selector asks before a session changes hands.

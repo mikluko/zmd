@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -62,6 +64,22 @@ func pollSessions() tea.Cmd {
 	})
 }
 
+// reposMsg is the checkouts below home, walked or asked of the daemon again.
+type reposMsg struct{ repos []string }
+
+// rewalk is how often the picker asks for the checkouts again, so one cloned
+// while it is up shows. A daemon answers at once; without one this is a walk
+// of ~, which is why it is not every second.
+const rewalk = 30 * time.Second
+
+// pollRepos asks for the checkouts below home once rewalk has passed.
+func pollRepos(home string) tea.Cmd {
+	return tea.Tick(rewalk, func(time.Time) tea.Msg {
+		repos, _ := walked(context.Background(), dialDeck(), home)
+		return reposMsg{repos: repos}
+	})
+}
+
 // killedMsg reports a kill and what is running after it.
 type killedMsg struct {
 	live  []Session
@@ -81,11 +99,12 @@ type outcome struct {
 type pickModel struct {
 	live     []Session
 	held     *Session // what escape leaves for, nil where there is nothing to go back to
-	home     string   // where the picker stands on opening
+	home     string   // where repositories are walked from and browsing starts
+	repos    []string
 	seen     visits
 	attached map[string]int64
 
-	panes [2]*pane
+	panes [modes]*pane
 	mode  mode
 	query textinput.Model
 	match *matcher
@@ -102,7 +121,7 @@ type pickModel struct {
 	result outcome
 }
 
-func newPickModel(live []Session, home string, seen visits, attached map[string]int64, open mode) *pickModel {
+func newPickModel(live []Session, repos []string, home string, seen visits, attached map[string]int64, open mode) *pickModel {
 	q := textinput.New()
 	styles := textinput.DefaultDarkStyles()
 	styles.Focused.Prompt = promptStyle
@@ -110,14 +129,16 @@ func newPickModel(live []Session, home string, seen visits, attached map[string]
 	q.SetStyles(styles)
 	q.Focus()
 	m := &pickModel{
-		live: live, held: lastHeld(live),
+		live: live, held: lastHeld(live), repos: repos,
 		home: home, seen: seen, attached: attached,
 		query: q, match: newMatcher(), preview: viewport.New(),
 	}
-	m.panes[modeFiles] = &pane{mode: modeFiles, marked: map[string]bool{}}
-	m.panes[modeSessions] = &pane{mode: modeSessions, marked: map[string]bool{}}
-	m.stand(m.panes[modeFiles], home)
+	for mo := range modes {
+		m.panes[mo] = &pane{mode: mo, marked: map[string]bool{}}
+	}
+	m.build(m.panes[modeCheckouts])
 	m.build(m.panes[modeSessions])
+	m.stand(m.panes[modeBrowse], home)
 	m.show(open)
 	return m
 }
@@ -136,10 +157,10 @@ func (m *pickModel) show(mo mode) {
 // where is what the prompt says, in at most width cells: a directory deep
 // enough to fill the line keeps its end, which is the part that differs.
 func (m *pickModel) where(width int) string {
-	if m.mode == modeSessions {
-		return "sessions"
+	if m.mode != modeBrowse {
+		return m.mode.String()
 	}
-	return keepTail(shorten(m.panes[modeFiles].root), max(width, 8))
+	return keepTail(shorten(m.panes[modeBrowse].root), max(width, 8))
 }
 
 // rowKey is what identifies a row across rebuilds: the session it stands for,
@@ -152,6 +173,8 @@ func rowKey(r row) string {
 		return "o:" + r.dir
 	case kindUp:
 		return "u:" + r.dir
+	case kindCheckout:
+		return "c:" + r.dir
 	default:
 		return "d:" + r.dir
 	}
@@ -181,10 +204,13 @@ func (m *pickModel) build(p *pane) {
 	if r := p.at(p.cursor); r != nil {
 		keep = rowKey(*r)
 	}
-	if p.mode == modeFiles {
-		p.rows = fileRows(p.root, m.home, m.live, p.dirs, m.seen)
-	} else {
+	switch p.mode {
+	case modeCheckouts:
+		p.rows = checkoutRows(m.home, m.live, m.repos, m.seen)
+	case modeSessions:
 		p.rows = sessionRows(m.live, m.attached)
+	default:
+		p.rows = fileRows(p.root, m.home, m.live, p.dirs, m.seen)
 	}
 	present := map[string]bool{}
 	for _, r := range p.rows {
@@ -364,7 +390,11 @@ func listDir(dir string, w *bytes.Buffer) error {
 }
 
 func (m *pickModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.fetchPreview(), pollSessions())
+	cmds := []tea.Cmd{textinput.Blink, m.fetchPreview(), pollSessions()}
+	if m.home != "" {
+		cmds = append(cmds, pollRepos(m.home))
+	}
+	return tea.Batch(cmds...)
 }
 
 // relive rebuilds every view over live, keeping each cursor where it was. The
@@ -373,7 +403,7 @@ func (m *pickModel) Init() tea.Cmd {
 func (m *pickModel) relive(live []Session) {
 	m.live = live
 	m.held = lastHeld(m.live)
-	files := m.panes[modeFiles]
+	files := m.panes[modeBrowse]
 	files.dirs = tree(files.root, treeDepth, keepDirs(m.live, m.seen))
 	for _, p := range m.panes {
 		m.build(p)
@@ -403,6 +433,13 @@ func (m *pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.relive(msg.live)
 		return m, m.fetchPreview()
+
+	case reposMsg:
+		if !slices.Equal(msg.repos, m.repos) {
+			m.repos = msg.repos
+			m.build(m.panes[modeCheckouts])
+		}
+		return m, pollRepos(m.home)
 
 	case liveMsg:
 		if msg.err != nil {
@@ -440,7 +477,7 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "tab":
-		m.show(1 - m.mode)
+		m.show((m.mode + 1) % modes)
 		saveMode(m.mode)
 		return m, m.fetchPreview()
 	case "alt+up":
@@ -466,7 +503,7 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		return m.enter()
 	case "shift+enter":
-		if r := m.current(); r != nil && (r.kind == kindSession || r.kind == kindDir) {
+		if r := m.current(); r != nil && (r.kind == kindSession || r.kind == kindDir || r.kind == kindCheckout) {
 			k := rowKey(*r)
 			p.marked[k] = !p.marked[k]
 			if !p.marked[k] {
@@ -519,7 +556,7 @@ func (m *pickModel) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // enter stands in the directory under the cursor, or the one above; attaches
 // the session, taking it after asking where another terminal has it open; or
-// starts one where the row offers to.
+// starts one in the checkout, or where the row offers to.
 func (m *pickModel) enter() (tea.Model, tea.Cmd) {
 	p := m.top()
 	r := m.current()
@@ -531,7 +568,7 @@ func (m *pickModel) enter() (tea.Model, tea.Cmd) {
 	case kindDir, kindUp:
 		m.stand(p, r.dir)
 		return m, m.fetchPreview()
-	case kindOffer:
+	case kindOffer, kindCheckout:
 		m.result = outcome{name: sessionName(m.live), dir: r.dir, place: r.dir}
 		return m, tea.Quit
 	}
@@ -632,12 +669,15 @@ func modeFile() string {
 	return filepath.Join(dir, "view")
 }
 
-// loadMode is the view last switched to, the filesystem where none was.
+// loadMode is the view last switched to, the checkouts where none was.
 func loadMode() mode {
-	if readLast(modeFile()) == modeSessions.String() {
-		return modeSessions
+	saved := readLast(modeFile())
+	for mo := range modes {
+		if mo.String() == saved {
+			return mo
+		}
 	}
-	return modeFiles
+	return modeCheckouts
 }
 
 func saveMode(mo mode) { writeLast(modeFile(), mo.String()) }
@@ -684,6 +724,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	repos, _ := walked(context.Background(), dialDeck(), home)
 	live, err := sessions()
 	if err != nil {
 		return err
@@ -694,7 +735,7 @@ func run() error {
 		seen = loadVisits()
 	}
 
-	m := newPickModel(live, home, seen, loadAttaches(), loadMode())
+	m := newPickModel(live, repos, home, seen, loadAttaches(), loadMode())
 	m.opening()
 
 	final, err := tea.NewProgram(m).Run()

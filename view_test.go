@@ -129,3 +129,23 @@ func TestMarksTellARepositoryFromAWorktree(t *testing.T) {
 		}
 	}
 }
+
+// Every repository and worktree is a checkout, a worktree kept inside its
+// repository counting its own sessions, and checkouts worked in lead.
+func TestCheckoutRowsOwnTheirSessions(t *testing.T) {
+	root, live := scene(t)
+	engine, tree, api, _ := sceneDirs(root)
+	now := time.Now()
+	seen := visits{filepath.Join(api, "sub"): {Rank: 1, Last: now.Unix()}}
+	rows := checkoutRows(root, live, []string{engine, tree, api}, seen)
+	if len(rows) != 3 || rows[0].dir != api {
+		t.Fatalf("rows %q, want three with api first, worked in", labelsOf(rows))
+	}
+	count := map[string]int{}
+	for _, r := range rows {
+		count[r.dir] = r.count
+	}
+	if count[engine] != 2 || count[tree] != 1 || count[api] != 1 {
+		t.Errorf("counts %v, want engine 2, its worktree 1, api 1", count)
+	}
+}
