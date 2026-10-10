@@ -474,3 +474,13 @@ func TestPageMovesAScreenful(t *testing.T) {
 		t.Errorf("PgUp past the start: cursor %d, want 0", m.top().cursor)
 	}
 }
+
+// With nothing running the sessions view is empty rather than a crash.
+func TestNothingRunningIsAnEmptySessionsView(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := newPickModel(nil, t.TempDir(), visits{}, map[string]int64{}, modeSessions)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if !strings.Contains(m.View().Content, empty(modeSessions)) {
+		t.Error("an empty sessions view does not say so")
+	}
+}

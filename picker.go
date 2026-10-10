@@ -217,6 +217,9 @@ func rowText(rows []row) []string {
 		cells = append(cells, r.cells)
 		at = append(at, i)
 	}
+	if len(cells) == 0 {
+		return out
+	}
 	for j, line := range align(cells) {
 		out[at[j]] = line
 	}
