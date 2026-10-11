@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -15,21 +18,47 @@ type Session struct {
 	PID     string
 	Clients string
 	Dir     string
+	Title   string // what a `zmx set <name> title=` says the session is for
+	Created int64  // when zmx started it, in Unix seconds
+	Here    bool   // this terminal is one of the clients
+}
+
+// heldElsewhere reports whether a terminal other than this one has the session
+// open.
+//
+// zmx lets any number of clients attach to one session and they mirror each
+// other, keystrokes and all, which is worth walking into deliberately rather
+// than by pressing enter on a row that looked free.
+func (s Session) heldElsewhere() bool {
+	n, err := strconv.Atoi(s.Clients)
+	if err != nil {
+		return false
+	}
+	if s.Here {
+		n--
+	}
+	return n > 0
 }
 
 // sessions returns every running session, ordered by name.
 //
 // A zmx that is absent, or that reports no sessions, yields none rather than
-// an error: a picker with nothing to show is not a failure.
+// an error: a picker with nothing to show is not a failure. A zmx that fails
+// is one, carrying what it wrote to stderr, since read as none it would show
+// every session as gone.
 func sessions() ([]Session, error) {
 	out, err := exec.Command("zmx", "list").Output()
-	if err != nil {
-		// `zmx list` exits non-zero with no sessions on some paths, and its
-		// stdout is empty in exactly that case, so an empty read is the
-		// answer rather than the error.
-		if len(out) == 0 {
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		msg := strings.TrimSpace(string(exit.Stderr))
+		if strings.HasPrefix(msg, "no sessions found") {
 			return nil, nil
 		}
+		return nil, fmt.Errorf("zmx list: %s", msg)
+	case errors.Is(err, exec.ErrNotFound):
+		return nil, nil
+	case err != nil:
 		return nil, err
 	}
 	return parseSessions(strings.NewReader(string(out))), nil
@@ -54,6 +83,18 @@ func parseSessions(r io.Reader) []Session {
 			if !ok {
 				continue
 			}
+			// `zmx list` writes a marker ahead of the first field's label,
+			// `→ ` on the session the terminal is attached to, so the label
+			// is the last word of what precedes the `=` rather than all of
+			// it. Reading the whole of it drops that session from the list.
+			//
+			// That there was something to strip is the marker, and the marker
+			// is how a session this terminal holds is told from one another
+			// terminal holds.
+			if i := strings.LastIndexAny(key, " \t"); i >= 0 {
+				key = key[i+1:]
+				s.Here = true
+			}
 			switch key {
 			case "name":
 				s.Name = value
@@ -63,6 +104,12 @@ func parseSessions(r io.Reader) []Session {
 				s.Clients = value
 			case "cwd":
 				s.Dir = parseCwd(value)
+			case "created":
+				s.Created, _ = strconv.ParseInt(value, 10, 64)
+			case "title":
+				// A label, written on the same record as the fields zmx
+				// keeps itself, so it costs no second call to read.
+				s.Title = value
 			}
 		}
 		if s.Name == "" {
@@ -80,7 +127,7 @@ func parseSessions(r io.Reader) []Session {
 // parseCwd resolves a `cwd=` value to a filesystem path.
 //
 // zmx reports it as a file URI carrying the host the session was created on
-// (`file://saraksh.local/Users/...`), so the authority is dropped and the
+// (`file://host.local/Users/...`), so the authority is dropped and the
 // path percent-decoded. A value that does not parse is returned as given.
 func parseCwd(value string) string {
 	if value == "" {
@@ -96,11 +143,26 @@ func parseCwd(value string) string {
 	return u.Path
 }
 
-// sessionSafe rewrites a name zmx cannot hold.
+// fingerprint is what of live a picker draws, as one string: two readings
+// with the same fingerprint draw the same list.
+func fingerprint(live []Session) string {
+	var b strings.Builder
+	for _, s := range live {
+		b.WriteString(s.Name + "\x00" + s.Clients + "\x00" + s.Title + "\x00" + s.Dir + "\n")
+	}
+	return b.String()
+}
+
+// steady passes a reading on once it has been read twice running.
 //
-// zmx gives each session a unix socket named after it, so a name carrying a
-// separator is a path and the session fails to create. Nothing reports this:
-// `zmx attach org/repo` exits having made no session at all.
-func sessionSafe(name string) string {
-	return strings.ReplaceAll(name, "/", ".")
+// Reading a session's scrollback attaches a client to it for as long as the
+// read takes, so a single reading can show a client nobody has: the preview's
+// own. A reading taken a poll apart from an identical one is not that.
+type steady struct{ last string }
+
+// settled records fp and reports whether it matches the reading before it.
+func (s *steady) settled(fp string) bool {
+	ok := fp == s.last
+	s.last = fp
+	return ok
 }

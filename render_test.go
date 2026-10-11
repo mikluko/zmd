@@ -5,230 +5,346 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/go-git/go-git/v5/config"
 )
 
-// names returns the hidden first field of each rendered line, which is what
-// fzf hands back and what the caller attaches to.
-func names(lines []string) []string {
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		out[i], _, _ = strings.Cut(l, "\t")
-	}
-	return out
-}
-
-// displays returns what fzf shows and searches.
-func displays(lines []string) []string {
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		_, out[i], _ = strings.Cut(l, "\t")
-	}
-	return out
-}
-
-// scene builds a root holding one repository, one of its worktrees, and
-// returns sessions sitting in those plus one outside any repository.
+// scene builds a tree holding two repositories, a worktree of one of them and
+// a directory that is neither, and returns sessions sitting in some of them.
 func scene(t *testing.T) (root string, found []Session) {
 	t.Helper()
 	root = t.TempDir()
-	repo := repoAt(t, filepath.Join(root, "mikluko", "octant"))
-	tree := worktreeAt(t, repo, "octant-918-arrival",
-		filepath.Join(root, "mikluko", "octant", "tmp", "worktrees", "octant-918-arrival"))
-	other := repoAt(t, filepath.Join(root, "uptime-com", "api"))
-	loose := t.TempDir()
+	repo := repoAt(t, filepath.Join(root, "src", "acme", "engine"))
+	tree := worktreeAt(t, repo, "engine-918",
+		filepath.Join(root, "src", "acme", "engine", ".claude", "worktrees", "engine-918"))
+	other := repoAt(t, filepath.Join(root, "src", "acme", "api"))
+	plain := filepath.Join(root, "Documents", "notes")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	return root, []Session{
-		{Name: "mikluko.octant", Clients: "1", Dir: repo},
-		{Name: "mikluko.octant@918-arrival", Clients: "0", Dir: tree},
-		{Name: "uptime-com.api", Clients: "0", Dir: other},
-		{Name: "scratch", Clients: "2", Dir: loose},
+		{Name: "src.acme.engine", Clients: "1", Dir: repo},
+		{Name: "src.acme.engine+review", Clients: "0", Dir: repo},
+		{Name: "supa-7f3a", Clients: "2", Dir: other},
+		{Name: "Documents.notes", Clients: "0", Dir: plain},
+		{Name: "loose", Clients: "0", Dir: t.TempDir()},
+		{Name: "tree", Clients: "0", Dir: tree},
 	}
 }
 
-func TestRenderPickRepoGroupsWorktreesUnderTheirRepository(t *testing.T) {
-	root, found := scene(t)
-	lines := renderPick(found, modeRepo, root)
+// One cell, however many stand there: filled where every one has a client
+// attached, hollow where none has, half filled where some have, blank where
+// there are none.
+func TestCircleSaysWhetherAnyIsAttached(t *testing.T) {
+	one, none, some := Session{Clients: "1"}, Session{Clients: "0"}, Session{Clients: ""}
+	for _, c := range []struct {
+		what  string
+		found []Session
+		want  string
+	}{
+		{"nothing there", nil, " "},
+		{"one, no client", []Session{none}, detached},
+		{"one, a client", []Session{one}, attached},
+		{"one, no count at all", []Session{some}, detached},
+		{"two, no client", []Session{none, none}, detached},
+		{"three, one attached", []Session{none, one, none}, mixed},
+		{"two, both attached", []Session{one, one}, attached},
+	} {
+		if got := circle(c.found); got != c.want {
+			t.Errorf("%s: rendered %q, want %q", c.what, got, c.want)
+		}
+	}
+}
 
+// Three cells wide whatever it says, or every name below it steps sideways.
+// Escapes are not cells, so the count is of what the terminal draws.
+func TestStatusIsAlwaysThreeCells(t *testing.T) {
+	root := t.TempDir()
+	repo := repoAt(t, filepath.Join(root, "engine"))
+	tree := worktreeAt(t, repo, "engine-918", filepath.Join(root, "elsewhere", "engine-918"))
+	plain := filepath.Join(root, "notes")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct{ what, dir string }{
+		{"a repository", repo},
+		{"a worktree", tree},
+		{"neither", plain},
+	} {
+		for _, found := range [][]Session{nil, {{Clients: "1"}}, {{Clients: "0"}, {Clients: "1"}}} {
+			got := status(c.dir, found)
+			if n := utf8.RuneCountInString(visible(got)); n != statusWidth {
+				t.Errorf("%s with %d sessions: %q is %d cells, want %d",
+					c.what, len(found), got, n, statusWidth)
+			}
+		}
+	}
+
+}
+
+// visible strips the SGR sequences, leaving what occupies a cell.
+func visible(s string) string {
+	for {
+		i := strings.Index(s, "\x1b[")
+		if i < 0 {
+			return s
+		}
+		j := strings.IndexByte(s[i:], 'm')
+		if j < 0 {
+			return s
+		}
+		s = s[:i] + s[i+j+1:]
+	}
+}
+
+// A prefix is not a path: `/a/bc` starts with `/a/b` and stands nowhere
+// below it.
+func TestUnderIsAPathAndNotAPrefix(t *testing.T) {
+	for _, c := range []struct {
+		base, path string
+		want       bool
+	}{
+		{"/a/b", "/a/b", true},
+		{"/a/b", "/a/b/c", true},
+		{"/a/b", "/a/bc", false},
+		{"/a/b", "/a", false},
+		{"", "/a", false},
+	} {
+		if got := under(c.base, c.path); got != c.want {
+			t.Errorf("under(%q, %q) = %v, want %v", c.base, c.path, got, c.want)
+		}
+	}
+}
+
+// A worktree and the repository it was cut from answer with the same root,
+// which is what lets a scope standing in one reach the other.
+func TestRepoRootAnswersWithTheRepositoryAWorktreeWasCutFrom(t *testing.T) {
+	root := t.TempDir()
+	repo := repoAt(t, filepath.Join(root, "engine"))
+	tree := worktreeAt(t, repo, "engine-918", filepath.Join(root, "elsewhere", "engine-918"))
+	plain := filepath.Join(root, "notes")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct{ what, dir, want string }{
+		{"a repository", repo, repo},
+		{"a directory inside one", filepath.Join(repo, "internal"), repo},
+		{"a worktree", tree, repo},
+		{"a directory that is neither", plain, ""},
+	} {
+		if got := repoRoot(c.dir); got != c.want {
+			t.Errorf("%s: repoRoot = %q, want %q", c.what, got, c.want)
+		}
+	}
+}
+
+// Killing the session this runs inside takes the process down with it, so
+// anything ordered after it would never be reached.
+func TestKillOrderPutsTheCurrentSessionLast(t *testing.T) {
+	got := killOrder([]string{"a", "here", "b"}, "here")
+	if strings.Join(got, ",") != "a,b,here" {
+		t.Errorf("ordered %q", got)
+	}
+	if got := killOrder([]string{"a", "b"}, ""); strings.Join(got, ",") != "a,b" {
+		t.Errorf("outside a session, ordered %q", got)
+	}
+	if got := killOrder([]string{"a", "b"}, "elsewhere"); strings.Join(got, ",") != "a,b" {
+		t.Errorf("in an unlisted session, ordered %q", got)
+	}
+}
+
+func TestQuestionCountsWhatAKillTakes(t *testing.T) {
+	if got := question([]string{"one"}); got != "kill one?" {
+		t.Errorf("one session asked %q", got)
+	}
+	if got := question([]string{"one", "two"}); got != "kill 2 sessions?" {
+		t.Errorf("two sessions asked %q", got)
+	}
+}
+
+// A repository and a linked worktree are both places to work, and git marks
+// both with a `.git`.
+func TestRepositoriesFindsReposAndWorktrees(t *testing.T) {
+	root, _ := scene(t)
+	// A plugin cache under ~/.claude is a repository nobody works in; the
+	// walk enters .claude only for the worktrees kept there.
+	repoAt(t, filepath.Join(root, ".claude", "plugins", "cache", "plugin"))
+	found := repositories(root)
+
+	// Sorted, so acme leads acme and a worktree follows the repository
+	// it sits under.
 	want := []string{
-		"mikluko.octant",
-		"mikluko.octant@918-arrival",
-		"uptime-com.api",
-		"scratch", // outside any repository, so last
+		filepath.Join(root, "src", "acme", "api"),
+		filepath.Join(root, "src", "acme", "engine"),
+		filepath.Join(root, "src", "acme", "engine", ".claude", "worktrees", "engine-918"),
 	}
-	got := names(lines)
-	if len(got) != len(want) {
-		t.Fatalf("got %d lines, want %d: %v", len(got), len(want), got)
+	if strings.Join(found, "\n") != strings.Join(want, "\n") {
+		t.Errorf("found:\n%s\nwant:\n%s", strings.Join(found, "\n"), strings.Join(want, "\n"))
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("line %d: got %q, want %q", i, got[i], want[i])
+}
+
+// The preview follows the shape of the space: beside the list where the
+// terminal is wide, below it where it is not, and nowhere at all where what
+// is left of the list would be unreadable.
+func TestPreviewLayoutFollowsTheShapeOfTheTerminal(t *testing.T) {
+	for _, c := range []struct {
+		cols, rows int
+		want       layout
+	}{
+		{200, 50, layoutBeside},
+		{120, 40, layoutBeside},
+		{119, 40, layoutAbove},
+		{80, 24, layoutAbove},
+		{79, 40, layoutNone},
+		{200, 14, layoutNone},
+	} {
+		if got := previewLayout(c.cols, c.rows); got != c.want {
+			t.Errorf("%dx%d previews as %d, want %d", c.cols, c.rows, got, c.want)
 		}
-	}
-
-	// The repository leads the display, and the worktree label follows it.
-	if !strings.HasPrefix(displays(lines)[0], "mikluko/octant") {
-		t.Errorf("repo column missing: %q", displays(lines)[0])
-	}
-	if !strings.Contains(displays(lines)[1], "918-arrival") {
-		t.Errorf("worktree label missing: %q", displays(lines)[1])
-	}
-	// The main worktree is marked ".", not by repeating the repository.
-	if !strings.Contains(displays(lines)[0], " .  ") {
-		t.Errorf("main worktree not marked: %q", displays(lines)[0])
-	}
-}
-
-func TestRenderPickDirSortsByDirectory(t *testing.T) {
-	root, found := scene(t)
-	got := displays(renderPick(found, modeDir, root))
-	for i := 1; i < len(got); i++ {
-		if got[i-1] > got[i] {
-			t.Errorf("not sorted by directory: %q before %q", got[i-1], got[i])
-		}
-	}
-}
-
-func TestRenderPickFlatSortsByName(t *testing.T) {
-	root, found := scene(t)
-	got := names(renderPick(found, modeFlat, root))
-	want := []string{"mikluko.octant", "mikluko.octant@918-arrival", "scratch", "uptime-com.api"}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("line %d: got %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-// Every grouping must keep the name in field one, because that is what the
-// preview reads as {1} and what the caller attaches to.
-func TestRenderPickKeepsTheNameInFieldOne(t *testing.T) {
-	root, found := scene(t)
-	for _, mode := range modes {
-		for _, line := range renderPick(found, mode, root) {
-			name, display, ok := strings.Cut(line, "\t")
-			if !ok {
-				t.Fatalf("%s: line has no tab: %q", mode, line)
-			}
-			if strings.Contains(display, "\t") {
-				t.Errorf("%s: display carries a tab, fzf would split it: %q", mode, display)
-			}
-			var known bool
-			for _, s := range found {
-				known = known || s.Name == name
-			}
-			if !known {
-				t.Errorf("%s: field one %q names no session", mode, name)
-			}
-		}
-	}
-}
-
-func TestRenderPickOnNoSessions(t *testing.T) {
-	if got := renderPick(nil, modeRepo, t.TempDir()); got != nil {
-		t.Errorf("got %v, want nil", got)
-	}
-}
-
-func TestTargetsListsRepositoriesAndTheirWorktrees(t *testing.T) {
-	root := t.TempDir()
-	repo := repoAt(t, filepath.Join(root, "mikluko", "octant"))
-	worktreeAt(t, repo, "octant-918", filepath.Join(root, "elsewhere", "octant-918"))
-	repoAt(t, filepath.Join(root, "uptime-com", "api"))
-
-	got := targets(root)
-	want := []Target{
-		{Name: "mikluko.octant", Dir: repo},
-		{Name: "mikluko.octant@918", Dir: filepath.Join(root, "elsewhere", "octant-918")},
-		{Name: "uptime-com.api", Dir: filepath.Join(root, "uptime-com", "api")},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d targets, want %d: %+v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("target %d: got %+v, want %+v", i, got[i], want[i])
-		}
-	}
-}
-
-// Every name targets offers must be one zmx can actually create.
-func TestTargetsNamesCarryNoSeparator(t *testing.T) {
-	root := t.TempDir()
-	repoAt(t, filepath.Join(root, "uptime-com", "up2-monitoring"))
-	for _, target := range targets(root) {
-		if strings.Contains(target.Name, string(os.PathSeparator)) {
-			t.Errorf("%q carries a separator, so zmx would create nothing", target.Name)
-		}
-	}
-}
-
-func TestRenderNewMarksRunningSessionsAndCarriesTheDirectory(t *testing.T) {
-	root := t.TempDir()
-	repoAt(t, filepath.Join(root, "mikluko", "octant"))
-	repoAt(t, filepath.Join(root, "uptime-com", "api"))
-
-	found := targets(root)
-	lines := renderNew(found, map[string]bool{"mikluko.octant": true})
-	if len(lines) != 2 {
-		t.Fatalf("got %d lines, want 2", len(lines))
-	}
-
-	name, rest, _ := strings.Cut(lines[0], "\t")
-	dir, display, _ := strings.Cut(rest, "\t")
-	if name != "mikluko.octant" {
-		t.Errorf("name %q", name)
-	}
-	if dir != filepath.Join(root, "mikluko", "octant") {
-		t.Errorf("dir %q", dir)
-	}
-	if !strings.Contains(display, "running") {
-		t.Errorf("display does not mark it running: %q", display)
-	}
-	if strings.Contains(displays(lines[1:])[0], "running") {
-		t.Errorf("second target wrongly marked running")
 	}
 }
 
 func TestAlignPadsToTheWidestCell(t *testing.T) {
 	got := align([][]string{
-		{"a", "one"},
-		{"bbbb", "two"},
+		{"●", "short", "x"},
+		{"", "a-much-longer-name", "y"},
 	})
 	if len(got) != 2 {
-		t.Fatalf("got %d lines", len(got))
+		t.Fatalf("aligned %d rows, want 2", len(got))
 	}
-	if strings.Contains(got[0], "\t") || strings.Contains(got[1], "\t") {
-		t.Errorf("tabs survived alignment: %q", got)
-	}
-	// The second column must start at the same offset on both lines.
-	if strings.Index(got[0], "one") != strings.Index(got[1], "two") {
+	// Counted in runes, as the terminal and tabwriter both count: a circle is
+	// one column and three bytes.
+	if column(got[0], "x") != column(got[1], "y") {
 		t.Errorf("columns not aligned: %q / %q", got[0], got[1])
 	}
 }
 
-func TestCycleModeWrapsInBothDirections(t *testing.T) {
-	mode := modes[0]
-	for range modes {
-		mode = cycleMode(mode, true)
+// column returns how many columns into line the given cell starts.
+func column(line, cell string) int {
+	return utf8.RuneCountInString(line[:strings.Index(line, cell)])
+}
+
+// A name is an address. It has to be unique among what is running, say where
+// it came from, and carry none of the separator zmx cannot hold in a socket
+// name.
+func TestSessionNameIsAFreeAddress(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var live []Session
+	seen := map[string]bool{}
+	for range 200 {
+		name := sessionName(live)
+		if seen[name] {
+			t.Fatalf("%q was handed out twice", name)
+		}
+		if strings.ContainsAny(name, "/ \t") {
+			t.Fatalf("%q carries what zmx cannot hold in a name", name)
+		}
+		if !strings.HasPrefix(name, "zmd.ghostty.") {
+			t.Fatalf("%q does not say what made it or where", name)
+		}
+		seen[name] = true
+		live = append(live, Session{Name: name})
 	}
-	if mode != modes[0] {
-		t.Errorf("forward through every grouping landed on %q, want %q", mode, modes[0])
+}
+
+// The label says what a session is for and the name says nothing, so the name
+// is the fallback rather than the answer.
+func TestSessionLabelPrefersWhatTheLabelsSay(t *testing.T) {
+	if got := sessionLabel(Session{Name: "harbor-41", Title: "retry-bug"}); got != "retry-bug" {
+		t.Errorf("a labelled session read as %q", got)
 	}
-	for _, m := range modes {
-		if back := cycleMode(cycleMode(m, true), false); back != m {
-			t.Errorf("%q forward then back landed on %q", m, back)
+	if got := sessionLabel(Session{Name: "harbor-41"}); got != "harbor-41" {
+		t.Errorf("an unlabelled session read as %q, want its name", got)
+	}
+}
+
+// Both forms git writes carry the same two trailing segments.
+func TestOwnerNameReadsBothRemoteForms(t *testing.T) {
+	for _, c := range []struct{ url, want string }{
+		{"https://github.com/acme/api.git", "acme/api"},
+		{"git@github.com:acme/api.git", "acme/api"},
+		{"git@github.com:acme/api", "acme/api"},
+		{"https://gitlab.com/group/sub/api.git", "sub/api"},
+		{"/srv/mirrors/api.git", "mirrors/api"},
+		{"api.git", ""},
+		{"", ""},
+	} {
+		got := ownerName(&config.RemoteConfig{URLs: []string{c.url}})
+		if got != c.want {
+			t.Errorf("ownerName(%q) = %q, want %q", c.url, got, c.want)
+		}
+	}
+	if got := ownerName(&config.RemoteConfig{}); got != "" {
+		t.Errorf("a remote with no URL gave %q", got)
+	}
+}
+
+// go-git refuses a repository whose format version carries an extension it
+// does not implement, and git sets `worktreeconfig` on exactly the ones
+// worktrees have been cut from. The config file is read instead.
+func TestIdentityReadsARepositoryGoGitWouldRefuseToOpen(t *testing.T) {
+	dir := repoAt(t, filepath.Join(t.TempDir(), "checkout"))
+	write(t, filepath.Join(dir, ".git", "config"), `[core]
+	repositoryformatversion = 1
+[extensions]
+	worktreeconfig = true
+[remote "origin"]
+	url = git@github.com:acme/api.git
+`)
+	if got := identity(dir); got != "acme/api" {
+		t.Errorf("identity = %q, want %q", got, "acme/api")
+	}
+}
+
+// A checkout with one remote under another name still knows what it is.
+func TestIdentityFallsPastOrigin(t *testing.T) {
+	dir := repoAt(t, filepath.Join(t.TempDir(), "checkout"))
+	write(t, filepath.Join(dir, ".git", "config"), `[remote "upstream"]
+	url = https://github.com/acme/api.git
+`)
+	if got := identity(dir); got != "acme/api" {
+		t.Errorf("identity = %q, want %q", got, "acme/api")
+	}
+	if got := identity(filepath.Join(t.TempDir(), "nothing")); got != "" {
+		t.Errorf("a directory with no config gave %q", got)
+	}
+}
+
+// The middle segment is the terminal the session was made in, read rather
+// than assumed, so the name stays true where the deck runs somewhere else.
+func TestTerminalNamesWhatTheSessionWasMadeIn(t *testing.T) {
+	for _, c := range []struct{ env, want string }{
+		{"ghostty", "ghostty"},
+		{"Apple_Terminal", "appleterminal"},
+		{"iTerm.app", "itermapp"},
+		{"", "term"},
+		{"!!!", "term"},
+	} {
+		t.Setenv("TERM_PROGRAM", c.env)
+		if got := terminal(); got != c.want {
+			t.Errorf("TERM_PROGRAM=%q gave %q, want %q", c.env, got, c.want)
 		}
 	}
 }
 
-// tab reads the grouping back out of the prompt, so the two must agree.
-func TestPromptModeReadsBackPrompt(t *testing.T) {
-	for _, m := range modes {
-		if got := promptMode(prompt(m)); got != m {
-			t.Errorf("prompt %q read back as %q", prompt(m), got)
+// Four bytes, hex, and never the same twice in a row by accident.
+func TestShortIDIsEightHexCharacters(t *testing.T) {
+	seen := map[string]bool{}
+	for range 500 {
+		id := shortID()
+		if len(id) != 8 {
+			t.Fatalf("%q is %d characters, want 8", id, len(id))
 		}
+		if strings.Trim(id, "0123456789abcdef") != "" {
+			t.Fatalf("%q is not hex", id)
+		}
+		seen[id] = true
 	}
-	if got := promptMode("> "); got != modes[0] {
-		t.Errorf("a foreign prompt read back as %q, want %q", got, modes[0])
+	if len(seen) < 450 {
+		t.Errorf("500 draws gave %d distinct ids", len(seen))
 	}
 }

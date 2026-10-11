@@ -1,112 +1,78 @@
-// Command zmx-nav selects and starts zmx sessions.
+// Command zmd selects and starts zmx sessions.
 //
 // zmx persists terminal sessions and deliberately provides no windows, tabs
 // or splits. What it also provides no opinion about is which session you
-// want, which is the gap this fills: `pick` moves between running sessions,
-// `new` starts one in a repository or one of its worktrees.
+// want, which is the gap this fills: one list of places, being the directories
+// a session can be started in and the directories sessions are already running
+// in, narrowed by typing.
 package main
 
 import (
+	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // version is stamped by the release build; `devel` means built from source.
 var version = "devel"
 
-const usage = `zmx-nav selects and starts zmx sessions.
+const usage = `zmd selects and starts zmx sessions.
 
 Usage:
-  zmx-nav pick [--mode flat|dir|repo]   Attach to a running session
-  zmx-nav new                           Start one in a repository or worktree
-  zmx-nav version                       Print the version
+  zmd            Pick a checkout to start a session in, or a session, and attach
+  zmd daemon     Hold the walk of checkouts warm, and learn which directories
+                 are worked in from where sessions cd to
+  zmd version    Print the version
 
-Options:
-  --root DIR    Where repositories live (default ~/Forge, or $ZMX_NAV_ROOT)
+The picker has three views, which tab cycles through: the checkouts below ~,
+where enter starts a session; every session, where enter attaches; and
+browse, which stands in a directory and lists what is below it.
 
-In the picker: tab cycles the grouping, shift-tab goes back.
+In the picker:
+  enter          start a session in a checkout with none, or list the
+                 sessions of one that has them; attach a session, taking it
+                 after asking where another terminal has it open; in browse,
+                 stand in a directory, or the one above on ..
+  tab            cycle through checkouts, sessions and browse
+  shift-enter    mark, for a kill that takes several at once
+  alt-enter      start another session where the cursor stands, whatever is
+                 already running there
+  delete         kill what the marked rows stand for, after asking;
+                 alt-delete without asking
+  pgup/pgdown    move the cursor a screenful
+  alt-up/down    scroll the preview; alt-pgup and alt-pgdown by the page
+  esc            leave for the session this pane last held
 `
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	if err := main_(os.Args[1:]); err != nil {
 		if errors.Is(err, errCancelled) {
 			os.Exit(130)
 		}
-		fmt.Fprintln(os.Stderr, "zmx-nav: "+err.Error())
+		fmt.Fprintln(os.Stderr, "zmd: "+err.Error())
 		os.Exit(1)
 	}
 }
 
-func run(argv []string) error {
-	if len(argv) == 0 {
-		fmt.Fprint(os.Stderr, usage)
-		return errors.New("no command given")
-	}
-
-	command, rest := argv[0], argv[1:]
-	switch command {
-	case "pick":
-		fs := flag.NewFlagSet("pick", flag.ContinueOnError)
-		mode := fs.String("mode", modeRepo, "grouping: flat, dir or repo")
-		render := fs.String("render", "", "print the lines for a grouping and exit; used by the picker's reload")
-		cycle := fs.String("cycle", "", "print the actions for the next or previous grouping; used by the picker's tab")
-		root := fs.String("root", defaultRoot(), "where repositories live")
-		if err := fs.Parse(rest); err != nil {
-			return err
-		}
-		switch *cycle {
-		case "":
-		case "next":
-			return runCycle(true)
-		case "prev":
-			return runCycle(false)
+func main_(argv []string) error {
+	if len(argv) > 0 {
+		switch argv[0] {
+		case "version", "--version", "-v":
+			fmt.Println(version)
+			return nil
+		case "help", "--help", "-h":
+			fmt.Print(usage)
+			return nil
+		case "daemon":
+			// Optional, and the picker never waits on it: what it holds is
+			// what a picker would otherwise work out for itself, and a
+			// picker that cannot reach it does exactly that.
+			return serve(context.Background())
 		default:
-			return fmt.Errorf("unknown direction %q", *cycle)
+			fmt.Fprint(os.Stderr, usage)
+			return fmt.Errorf("unknown argument %q", argv[0])
 		}
-		if *render != "" {
-			if !validMode(*render) {
-				return fmt.Errorf("unknown grouping %q", *render)
-			}
-			return runPick(*render, *root, true)
-		}
-		if !validMode(*mode) {
-			return fmt.Errorf("unknown grouping %q", *mode)
-		}
-		return runPick(*mode, *root, false)
-
-	case "new":
-		fs := flag.NewFlagSet("new", flag.ContinueOnError)
-		root := fs.String("root", defaultRoot(), "where repositories live")
-		if err := fs.Parse(rest); err != nil {
-			return err
-		}
-		return runNew(*root)
-
-	case "version", "--version", "-v":
-		fmt.Println(version)
-		return nil
-
-	case "help", "--help", "-h":
-		fmt.Print(usage)
-		return nil
 	}
-
-	fmt.Fprint(os.Stderr, usage)
-	return fmt.Errorf("unknown command %q", command)
-}
-
-// defaultRoot is where repositories are looked for: $ZMX_NAV_ROOT, else
-// ~/Forge.
-func defaultRoot() string {
-	if root := os.Getenv("ZMX_NAV_ROOT"); root != "" {
-		return root
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "."
-	}
-	return filepath.Join(home, "Forge")
+	return run()
 }
