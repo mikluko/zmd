@@ -200,7 +200,7 @@ says — an SSH `RemoteForward` being the case that needs to choose.
 ## Install
 
 ```sh
-brew install acme/tap/zmd
+brew install mikluko/tap/zmd
 ```
 
 Or from source:

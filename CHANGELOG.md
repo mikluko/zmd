@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-11
+
 ### Changed
 
 - Renamed to `zmd`, from `zmx-nav`. The old name described navigating between lists, which is neither what the tool does nor what it is for; this one is zmx's deck, the place you stand to see the whole of a thing and take it somewhere. The module path and the command both move, and `go install github.com/mikluko/zmx-nav` installs nothing after this.
@@ -59,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zmx-nav new` starts a session in any repository below `~/src` or in any worktree git records for one, named `org.repo` and `org.repo@label`. A name already running is attached rather than created.
 - `--root` and `ZMX_NAV_ROOT` set where repositories are looked for.
 
-[Unreleased]: https://github.com/mikluko/zmd/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/mikluko/zmd/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/mikluko/zmd/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/mikluko/zmd/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mikluko/zmd/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mikluko/zmd/releases/tag/v0.1.0
