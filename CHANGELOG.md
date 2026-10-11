@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `zmd daemon`, which reads what is running every second and credits a visit to every directory a session moves to: zmx follows a session's `cd` and `zmx list` says where it went, which is how the filesystem view learns which directories to list first. A daemon's first reading only seeds where sessions stand, so a restart credits nothing. It talks ConnectRPC over a unix socket beside the rest of the state, or wherever `ZMD_DECK_DIR` says, an SSH `RemoteForward` being the case that needs to choose, and refuses a socket path longer than the platform can bind, naming the limit. It also walks the checkouts below `~` and holds the result, so a picker asks rather than walks: 290ms before a single row was drawn, against 3ms. A picker that cannot reach it walks for itself.
+- `zmd daemon`, which reads what is running every second and credits a visit to every directory a session moves to: zmx follows a session's `cd` and `zmx list` says where it went, which is how the browse view learns which directories to list first. A daemon's first reading only seeds where sessions stand, so a restart credits nothing. It talks ConnectRPC over a unix socket beside the rest of the state, or wherever `ZMD_DECK_DIR` says, an SSH `RemoteForward` being the case that needs to choose, and refuses a socket path longer than the platform can bind, naming the limit. It also walks the checkouts below `~` and holds the result, so a picker asks rather than walks: 290ms before a single row was drawn, against 3ms. A picker that cannot reach it walks for itself.
 
 ### Removed
 
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The groupings `tab` cycled, and with them the view the picker remembered against the directory it was opened in.
 - `ctrl-n`. Nothing chooses a session's name any more, so the key had nothing left to do.
 - `ctrl-x`. Entering a session another terminal holds already takes it, after asking; a second key for the same thing without the asking is one path too many.
-- The scope, and the keys that widened and narrowed it. The filesystem view stands in a directory instead.
+- The scope, and the keys that widened and narrowed it. The browse view stands in a directory instead.
 
 ## [0.3.0] - 2026-09-16
 
@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `zmx-nav pick` attaches to a running zmx session, grouped flat, by working directory, or by repository with worktrees under the repository they belong to. `ctrl-f`, `ctrl-d` and `ctrl-r` swap the grouping without leaving the picker.
-- `zmx-nav new` starts a session in any repository below `~/src` or in any worktree git records for one, named `org.repo` and `org.repo@label`. A name already running is attached rather than created.
+- `zmx-nav new` starts a session in any repository below `~/Forge` or in any worktree git records for one, named `org.repo` and `org.repo@label`. A name already running is attached rather than created.
 - `--root` and `ZMX_NAV_ROOT` set where repositories are looked for.
 
 [Unreleased]: https://github.com/mikluko/zmd/compare/v0.4.0...HEAD

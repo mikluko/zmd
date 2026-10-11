@@ -149,7 +149,7 @@ none.
 
 ## Where it opens
 
-The filesystem view opens at `~`, always. The sessions view opens with the
+The browse view opens at `~`, always. The sessions view opens with the
 cursor on the session this pane last held, which after a detach is the one
 just left.
 
